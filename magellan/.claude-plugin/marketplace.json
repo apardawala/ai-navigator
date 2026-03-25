@@ -1,0 +1,13 @@
+{
+  "name": "slalom-plugins",
+  "owner": {
+    "name": "Slalom"
+  },
+  "plugins": [
+    {
+      "name": "magellan",
+      "source": "./",
+      "description": "Enterprise knowledge discovery and SDLC workflow plugin"
+    }
+  ]
+}

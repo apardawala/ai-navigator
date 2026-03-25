@@ -1,0 +1,597 @@
+#!/usr/bin/env node
+// Magellan KG Write Tool — safe JSON I/O for knowledge graph mutations
+// The LLM passes structured arguments, this script handles file I/O and validation.
+
+const fs = require('fs');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+
+function parseArgs(argv) {
+  const args = {};
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith('--')) {
+      const key = argv[i].slice(2);
+      const next = argv[i + 1];
+      if (!next || next.startsWith('--')) {
+        args[key] = true;
+      } else {
+        args[key] = next;
+        i++;
+      }
+    } else {
+      positional.push(argv[i]);
+    }
+  }
+  return { command: positional[0], args };
+}
+
+function require_arg(args, name) {
+  if (!args[name]) {
+    process.stderr.write(`ERROR: Missing required argument --${name}\n`);
+    process.exit(1);
+  }
+  return args[name];
+}
+
+// ---------------------------------------------------------------------------
+// Workspace helpers
+// ---------------------------------------------------------------------------
+
+function resolve_workspace(args) {
+  const ws = require_arg(args, 'workspace');
+  const mg = path.join(ws, '.magellan');
+  if (!fs.existsSync(mg)) {
+    process.stderr.write(`ERROR: No .magellan/ directory at ${ws}\n`);
+    process.exit(1);
+  }
+  return mg;
+}
+
+function read_json(filepath) {
+  if (!fs.existsSync(filepath)) return null;
+  return JSON.parse(fs.readFileSync(filepath, 'utf8'));
+}
+
+function write_json(filepath, data) {
+  const dir = path.dirname(filepath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const content = JSON.stringify(data, null, 2) + '\n';
+  fs.writeFileSync(filepath, content, 'utf8');
+  // Post-write validation
+  JSON.parse(fs.readFileSync(filepath, 'utf8'));
+}
+
+function snake_case(str) {
+  return str.toLowerCase()
+    .replace(/[^a-z0-9\s_]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+function slug(str) {
+  return str.toLowerCase()
+    .replace(/[^a-z0-9\s._-]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+// ---------------------------------------------------------------------------
+// Domain registry
+// ---------------------------------------------------------------------------
+
+function load_domains(mg) {
+  const file = path.join(mg, 'domains.json');
+  const data = read_json(file);
+  return data ? data.domains : [];
+}
+
+function save_domains(mg, domains) {
+  write_json(path.join(mg, 'domains.json'), { domains: domains.sort() });
+}
+
+function validate_domain_name(name) {
+  if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+    process.stderr.write(`ERROR: Domain name "${name}" invalid (must match ^[a-z][a-z0-9_]*$)\n`);
+    process.exit(1);
+  }
+}
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const d = Array.from({ length: m + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+  return d[m][n];
+}
+
+function check_similar_domains(name, existing) {
+  const similar = existing.filter(d => {
+    if (d === name) return false;
+    const dist = levenshtein(d, name);
+    return dist <= 3 || d.includes(name) || name.includes(d);
+  });
+  return similar;
+}
+
+function require_domain(mg, domain) {
+  validate_domain_name(domain);
+  const domains = load_domains(mg);
+  if (!domains.includes(domain)) {
+    process.stderr.write(`ERROR: Domain "${domain}" is not registered.\n`);
+    process.stderr.write(`Registered domains: ${domains.length ? domains.join(', ') : '(none)'}\n`);
+    process.stderr.write(`Register it first: node tools/kg-write.js add-domain --workspace <path> --domain ${domain}\n`);
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+function validate_confidence(val) {
+  const n = parseFloat(val);
+  if (isNaN(n) || n < 0 || n > 1) {
+    process.stderr.write(`ERROR: Invalid confidence ${val} (must be 0.0-1.0)\n`);
+    process.exit(1);
+  }
+  return n;
+}
+
+function validate_weight(val) {
+  const n = parseFloat(val);
+  if (isNaN(n) || n < 0 || n > 1) {
+    process.stderr.write(`ERROR: Invalid weight ${val} (must be 0.0-1.0)\n`);
+    process.exit(1);
+  }
+  return n;
+}
+
+const ENTITY_TYPES = [
+  'BusinessProcess', 'BusinessRule', 'Component', 'Service', 'Database',
+  'DataEntity', 'Integration', 'Infrastructure', 'Person', 'Team',
+  'Operational', 'Constraint'
+];
+
+const EDGE_TYPES = [
+  'DEPENDS_ON', 'CALLS', 'READS_FROM', 'WRITES_TO', 'INTEGRATES_WITH',
+  'ENFORCES', 'CONTAINS', 'TRIGGERS', 'PRODUCES', 'CONSUMES',
+  'PART_OF', 'SUCCEEDED_BY', 'SAME_AS', 'SHARES_DATA_WITH'
+];
+
+const SEVERITY_LEVELS = ['critical', 'high', 'medium', 'low'];
+const PRIORITY_LEVELS = ['critical', 'high', 'medium', 'low'];
+
+function validate_enum(val, allowed, label) {
+  if (!allowed.includes(val)) {
+    process.stderr.write(`ERROR: Invalid ${label} "${val}" (valid: ${allowed.join(', ')})\n`);
+    process.exit(1);
+  }
+}
+
+function validate_quote(quote) {
+  if (quote.length > 500) {
+    process.stderr.write(`ERROR: Source quote exceeds 500 chars (got ${quote.length})\n`);
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+function cmd_add_domain(args) {
+  const mg = resolve_workspace(args);
+  const domain = require_arg(args, 'domain');
+  validate_domain_name(domain);
+
+  const domains = load_domains(mg);
+
+  if (domains.includes(domain)) {
+    console.log(`Domain "${domain}" already registered`);
+    return;
+  }
+
+  const similar = check_similar_domains(domain, domains);
+  if (similar.length > 0 && !args.force) {
+    process.stderr.write(`WARNING: Similar domain(s) already exist: ${similar.join(', ')}\n`);
+    process.stderr.write(`Did you mean one of those? Use --force to register "${domain}" anyway.\n`);
+    process.exit(1);
+  }
+
+  domains.push(domain);
+  save_domains(mg, domains);
+
+  // Create domain directory
+  const domainDir = path.join(mg, 'domains', domain);
+  if (!fs.existsSync(domainDir)) {
+    fs.mkdirSync(path.join(domainDir, 'facts'), { recursive: true });
+    fs.mkdirSync(path.join(domainDir, 'entities'), { recursive: true });
+  }
+
+  console.log(`Registered domain "${domain}" (${domains.length} total)`);
+}
+
+function cmd_add_fact(args) {
+  const mg = resolve_workspace(args);
+  const domain = require_arg(args, 'domain');
+  require_domain(mg, domain);
+
+  const statement = require_arg(args, 'statement');
+  const subject = require_arg(args, 'subject');
+  const predicate = require_arg(args, 'predicate');
+  const object = require_arg(args, 'object');
+  const sourceDoc = require_arg(args, 'source-doc');
+  const sourceLocation = require_arg(args, 'source-location');
+  const sourceQuote = require_arg(args, 'source-quote');
+  const confidence = validate_confidence(require_arg(args, 'confidence'));
+
+  if (statement.length < 10) {
+    process.stderr.write(`ERROR: Statement must be at least 10 characters\n`);
+    process.exit(1);
+  }
+  validate_quote(sourceQuote);
+
+  const tags = args.tags ? args.tags.split(',').map(t => t.trim()) : [];
+  const sourceSlug = slug(path.basename(sourceDoc, path.extname(sourceDoc)));
+  const factFile = path.join(mg, 'domains', domain, 'facts', `${sourceSlug}.json`);
+
+  let data = read_json(factFile);
+  if (!data) {
+    data = {
+      source_document: sourceDoc,
+      domain: domain,
+      extracted_at: new Date().toISOString(),
+      fact_count: 0,
+      facts: []
+    };
+  }
+
+  const fact = {
+    statement,
+    subject,
+    subject_domain: domain,
+    predicate,
+    object,
+    source: {
+      document: sourceDoc,
+      location: sourceLocation,
+      quote: sourceQuote
+    },
+    confidence,
+    tags
+  };
+
+  data.facts.push(fact);
+  data.fact_count = data.facts.length;
+  data.extracted_at = new Date().toISOString();
+
+  write_json(factFile, data);
+  console.log(`Added fact to ${domain}/facts/${sourceSlug}.json (${data.fact_count} total)`);
+}
+
+function cmd_add_entity(args) {
+  const mg = resolve_workspace(args);
+  const domain = require_arg(args, 'domain');
+  require_domain(mg, domain);
+
+  const name = require_arg(args, 'name');
+  const type = require_arg(args, 'type');
+  validate_enum(type, ENTITY_TYPES, 'entity type');
+
+  const summary = require_arg(args, 'summary');
+  if (summary.length < 50) {
+    process.stderr.write(`ERROR: Summary must be at least 50 characters (got ${summary.length})\n`);
+    process.exit(1);
+  }
+
+  const confidence = validate_confidence(require_arg(args, 'confidence'));
+  const weight = validate_weight(require_arg(args, 'weight'));
+  const tags = args.tags ? args.tags.split(',').map(t => t.trim()) : [];
+
+  const entityId = `${domain}:${snake_case(name)}`;
+  const entitySlug = snake_case(name);
+  const entityFile = path.join(mg, 'domains', domain, 'entities', `${entitySlug}.json`);
+
+  // Parse evidence from stdin
+  const evidence = [];
+  const stdinData = args._stdin || '';
+  if (stdinData.trim()) {
+    for (const line of stdinData.trim().split('\n')) {
+      if (!line.trim()) continue;
+      const parts = {};
+      for (const pair of line.split('|')) {
+        const [key, ...rest] = pair.split(':');
+        parts[key.trim()] = rest.join(':').trim();
+      }
+      if (!parts.source || !parts.location || !parts.quote) {
+        process.stderr.write(`ERROR: Evidence line missing required fields (source, location, quote): ${line}\n`);
+        process.exit(1);
+      }
+      validate_quote(parts.quote);
+      evidence.push({
+        source: parts.source,
+        location: parts.location,
+        quote: parts.quote,
+        confidence: parts.confidence ? parseFloat(parts.confidence) : confidence
+      });
+    }
+  }
+
+  if (evidence.length === 0) {
+    process.stderr.write(`ERROR: Entity requires at least one evidence entry via stdin\n`);
+    process.exit(1);
+  }
+
+  const entity = {
+    entity_id: entityId,
+    name,
+    type,
+    domain,
+    summary,
+    properties: {},
+    evidence,
+    tags,
+    confidence,
+    weight,
+    version: { current: 'v1', status: 'active' },
+    related_entities: [],
+    open_questions: []
+  };
+
+  write_json(entityFile, entity);
+  console.log(`Created entity ${entityId} (${evidence.length} evidence entries)`);
+}
+
+function cmd_add_edge(args) {
+  const mg = resolve_workspace(args);
+  const domain = require_arg(args, 'domain');
+
+  // _cross_domain is a special domain for cross-domain edges
+  const isCrossDomain = domain === '_cross_domain';
+  if (!isCrossDomain) require_domain(mg, domain);
+
+  const from = require_arg(args, 'from');
+  const to = require_arg(args, 'to');
+  const type = require_arg(args, 'type');
+  validate_enum(type, EDGE_TYPES, 'edge type');
+
+  const description = require_arg(args, 'description');
+  const evidenceSource = require_arg(args, 'evidence-source');
+  const evidenceLocation = require_arg(args, 'evidence-location');
+  const confidence = validate_confidence(require_arg(args, 'confidence'));
+  const weight = validate_weight(require_arg(args, 'weight'));
+
+  const relFile = isCrossDomain
+    ? path.join(mg, 'cross_domain.json')
+    : path.join(mg, 'domains', domain, 'relationships.json');
+  let data = read_json(relFile);
+  if (!data) {
+    data = { domain, edges: [] };
+  }
+
+  // Check for duplicate edge
+  const exists = data.edges.some(e => e.from === from && e.to === to && e.type === type);
+  if (exists) {
+    process.stderr.write(`WARNING: Edge ${type} (${from} → ${to}) already exists, skipping\n`);
+    return;
+  }
+
+  const edge = {
+    from,
+    to,
+    type,
+    properties: { description },
+    evidence: { source: evidenceSource, location: evidenceLocation },
+    confidence,
+    weight
+  };
+
+  data.edges.push(edge);
+  write_json(relFile, data);
+
+  const fromShort = from.split(':')[1] || from;
+  const toShort = to.split(':')[1] || to;
+  console.log(`Added edge ${type} (${fromShort} → ${toShort}) to ${domain}/relationships.json`);
+}
+
+function cmd_add_contradiction(args) {
+  const mg = resolve_workspace(args);
+  const domain = require_arg(args, 'domain');
+  require_domain(mg, domain);
+
+  const description = require_arg(args, 'description');
+  const severity = require_arg(args, 'severity');
+  validate_enum(severity, SEVERITY_LEVELS, 'severity');
+
+  const relatedEntities = args['related-entities']
+    ? args['related-entities'].split(',').map(e => e.trim())
+    : [];
+  const source1 = require_arg(args, 'source1');
+  const quote1 = require_arg(args, 'quote1');
+  const source2 = require_arg(args, 'source2');
+  const quote2 = require_arg(args, 'quote2');
+
+  validate_quote(quote1);
+  validate_quote(quote2);
+
+  const cFile = path.join(mg, 'domains', domain, 'contradictions.json');
+  let data = read_json(cFile);
+  if (!data) {
+    data = { active: [], resolved: [] };
+  }
+
+  const nextNum = data.active.length + data.resolved.length + 1;
+  const contradictionId = `c_${String(nextNum).padStart(3, '0')}`;
+
+  const entry = {
+    contradiction_id: contradictionId,
+    description,
+    domain,
+    severity,
+    status: 'open',
+    related_entities: relatedEntities,
+    sources: [
+      { source: source1, quote: quote1 },
+      { source: source2, quote: quote2 }
+    ],
+    detected_at: new Date().toISOString()
+  };
+
+  data.active.push(entry);
+  write_json(cFile, data);
+  console.log(`Added contradiction ${contradictionId} (${severity}) to ${domain}/contradictions.json`);
+}
+
+function cmd_add_question(args) {
+  const mg = resolve_workspace(args);
+  const domain = require_arg(args, 'domain');
+  require_domain(mg, domain);
+
+  const question = require_arg(args, 'question');
+  const priority = require_arg(args, 'priority');
+  validate_enum(priority, PRIORITY_LEVELS, 'priority');
+
+  const relatedEntities = args['related-entities']
+    ? args['related-entities'].split(',').map(e => e.trim())
+    : [];
+  const raisedBy = args['raised-by'] || 'Pipeline';
+  const context = args['context'] || '';
+  const directedTo = args['directed-to'] || '';
+
+  const qFile = path.join(mg, 'domains', domain, 'open_questions.json');
+  let data = read_json(qFile);
+  if (!data) {
+    data = { active: [], resolved: [] };
+  }
+
+  const nextNum = data.active.length + data.resolved.length + 1;
+  const questionId = `oq_${String(nextNum).padStart(3, '0')}`;
+
+  const entry = {
+    question_id: questionId,
+    question,
+    domain,
+    priority,
+    status: 'open',
+    related_entities: relatedEntities,
+    raised_by: raisedBy,
+    context,
+    directed_to: directedTo,
+    raised_at: new Date().toISOString()
+  };
+
+  data.active.push(entry);
+  write_json(qFile, data);
+  console.log(`Added question ${questionId} (${priority}) to ${domain}/open_questions.json`);
+}
+
+function cmd_validate(args) {
+  const mg = resolve_workspace(args);
+  const file = require_arg(args, 'file');
+  const filepath = path.join(mg, file);
+
+  if (!fs.existsSync(filepath)) {
+    process.stderr.write(`ERROR: File not found: ${filepath}\n`);
+    process.exit(1);
+  }
+
+  try {
+    const data = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+
+    // Detect file type and validate
+    if (data.facts && Array.isArray(data.facts)) {
+      const missing = data.facts.filter(f => !f.statement || !f.source?.quote);
+      if (missing.length > 0) {
+        process.stderr.write(`Invalid: ${missing.length} facts missing statement or source quote\n`);
+        process.exit(1);
+      }
+      console.log(`Valid: fact file with ${data.facts.length} facts`);
+    } else if (data.entity_id) {
+      if (!data.summary || data.summary.length < 50) {
+        process.stderr.write(`Invalid: entity summary missing or under 50 chars\n`);
+        process.exit(1);
+      }
+      if (!data.evidence || data.evidence.length === 0) {
+        process.stderr.write(`Invalid: entity has no evidence entries\n`);
+        process.exit(1);
+      }
+      console.log(`Valid: entity ${data.entity_id} (${data.evidence.length} evidence, weight ${data.weight})`);
+    } else if (data.edges && Array.isArray(data.edges)) {
+      console.log(`Valid: relationships with ${data.edges.length} edges`);
+    } else if (data.active !== undefined && data.resolved !== undefined) {
+      console.log(`Valid: ${data.active.length} active, ${data.resolved.length} resolved`);
+    } else if (data.domains) {
+      console.log(`Valid: domain registry with ${data.domains.length} domains`);
+    } else {
+      console.log(`Valid JSON (unknown schema)`);
+    }
+  } catch (e) {
+    process.stderr.write(`Invalid JSON: ${e.message}\n`);
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+const COMMANDS = {
+  'add-domain': cmd_add_domain,
+  'add-fact': cmd_add_fact,
+  'add-entity': cmd_add_entity,
+  'add-edge': cmd_add_edge,
+  'add-contradiction': cmd_add_contradiction,
+  'add-question': cmd_add_question,
+  'validate': cmd_validate
+};
+
+// Read stdin if piped (for add-entity evidence)
+let stdinData = '';
+try {
+  if (!process.stdin.isTTY && process.stdin.readable) {
+    stdinData = fs.readFileSync(0, 'utf8');
+  }
+} catch (_) {
+  // No stdin available — that's fine for non-entity commands
+}
+
+const { command, args } = parseArgs(process.argv.slice(2));
+args._stdin = stdinData;
+
+if (!command || command === 'help') {
+  console.log(`Usage: node kg-write.js <command> --workspace <path> [options]
+
+Commands:
+  add-domain          Register a new domain
+  add-fact            Append a fact to a domain fact file
+  add-entity          Create an entity file (evidence via stdin)
+  add-edge            Append an edge to relationships.json
+  add-contradiction   Add a contradiction to the active array
+  add-question        Add an open question to the active array
+  validate            Validate a KG JSON file`);
+  process.exit(0);
+}
+
+if (!COMMANDS[command]) {
+  process.stderr.write(`ERROR: Unknown command "${command}". Run with "help" for usage.\n`);
+  process.exit(1);
+}
+
+try {
+  COMMANDS[command](args);
+} catch (e) {
+  process.stderr.write(`ERROR: ${e.message}\n`);
+  process.exit(1);
+}

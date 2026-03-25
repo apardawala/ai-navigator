@@ -1,0 +1,20 @@
+{
+  "name": "magellan",
+  "version": "2.0.0",
+  "description": "Enterprise knowledge discovery and SDLC workflow — builds a queryable knowledge graph from documents, code, and transcripts with contradictions and open questions as primary output. Includes codebase analysis, external research, and a 7-phase structured work lifecycle.",
+  "author": {
+    "name": "Slalom"
+  },
+  "repository": "https://github.com/Slalom/ai-navigator",
+  "license": "Apache-2.0",
+  "keywords": [
+    "knowledge-discovery",
+    "knowledge-graph",
+    "enterprise",
+    "sdlc",
+    "onboarding",
+    "legacy-systems"
+  ],
+  "commands": ["./commands/"],
+  "skills": ["./skills/"]
+}

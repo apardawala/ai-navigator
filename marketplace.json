@@ -1,0 +1,24 @@
+{
+  "name": "slalom",
+  "description": "Slalom AI Navigator — Magellan and Lookout plugins for Claude Code",
+  "plugins": [
+    {
+      "name": "magellan",
+      "description": "Enterprise knowledge discovery — builds a queryable knowledge graph from documents, code, and transcripts",
+      "version": "2.0.0",
+      "source": {
+        "type": "git-subdir",
+        "path": "magellan"
+      }
+    },
+    {
+      "name": "lookout",
+      "description": "Continuous improvement for your AI toolchain — monitors official sources and audits your setup",
+      "version": "1.0.0",
+      "source": {
+        "type": "git-subdir",
+        "path": "lookout"
+      }
+    }
+  ]
+}

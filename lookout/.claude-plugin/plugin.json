@@ -1,0 +1,19 @@
+{
+  "name": "lookout",
+  "version": "1.0.0",
+  "description": "Continuous improvement for your AI toolchain. Monitors official Anthropic sources for changes, audits your setup against current best practices, and helps you incorporate improvements interactively. Run /lookout before starting new work to stay current.",
+  "author": {
+    "name": "Slalom"
+  },
+  "repository": "https://github.com/Slalom/ai-navigator",
+  "license": "Apache-2.0",
+  "keywords": [
+    "maintenance",
+    "configuration",
+    "best-practices",
+    "release-notes",
+    "continuous-improvement",
+    "claude-code",
+    "setup-audit"
+  ]
+}

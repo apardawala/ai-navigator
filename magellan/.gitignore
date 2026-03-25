@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Claude Code local settings
+.claude/
+.mcp.json
+
+# Gemini/AntiGravity local install
+.agent/
+
+# Kiro local install
+.kiro/
+.magellan-tools/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test outputs (generated during simulation)
+**/simulation-test/
+
+# Node modules (if any future dependencies)
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# Logs
+*.log

@@ -1,0 +1,13 @@
+# Runtime state (user-specific, not distributed)
+state.json
+docs-index.txt
+backlog.md
+changelog.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
