@@ -192,8 +192,13 @@ function cmd_rebuild_index(args) {
     index.total_edges += crossData.edges.length;
   }
 
+  // Add cross-domain contradictions
+  const crossContraFile = path.join(mg, 'cross_domain_contradictions.json');
+  const crossContraData = read_json(crossContraFile);
+  index.cross_domain_contradictions = crossContraData ? (crossContraData.active || []).length : 0;
+
   write_json(path.join(mg, 'index.json'), index);
-  console.log(`Rebuilt index.json: ${index.total_entities} entities, ${index.total_edges} edges across ${domains.length} domains`);
+  console.log(`Rebuilt index.json: ${index.total_entities} entities, ${index.total_edges} edges across ${domains.length} domains (${index.cross_domain_contradictions} cross-domain contradictions)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +225,8 @@ function cmd_hash_check(args) {
   }
   walk(ws, '');
 
-  const results = { new: [], changed: [], unchanged: [], total: allFiles.length };
+  const force = !!args.force;
+  const results = { new: [], changed: [], unchanged: [], forced: [], total: allFiles.length };
 
   for (const file of allFiles) {
     const fullPath = path.join(ws, file);
@@ -229,6 +235,8 @@ function cmd_hash_check(args) {
 
     if (!stored) {
       results.new.push({ file, hash: `sha256:${currentHash}` });
+    } else if (force && stored.content_hash === `sha256:${currentHash}`) {
+      results.forced.push({ file, hash: `sha256:${currentHash}`, domain: stored.domain });
     } else if (stored.content_hash !== `sha256:${currentHash}`) {
       results.changed.push({
         file,
@@ -252,7 +260,6 @@ function cmd_verify_ledger(args) {
   const { ws, mg } = resolve_mg(args);
   const pfData = read_json(path.join(mg, 'processed_files.json')) || { files: {} };
 
-  // Count workspace files
   const allFiles = [];
   function walk(dir, rel) {
     for (const entry of fs.readdirSync(dir)) {
@@ -269,22 +276,52 @@ function cmd_verify_ledger(args) {
   walk(ws, '');
 
   const ledgerFiles = Object.keys(pfData.files);
-  const missing = allFiles.filter(f => !ledgerFiles.includes(f));
-  const stale = ledgerFiles.filter(f => !allFiles.includes(f));
+  const missingFiles = allFiles.filter(f => !ledgerFiles.includes(f));
+  const staleFiles = ledgerFiles.filter(f => !allFiles.includes(f));
 
-  const result = {
+  const missing = missingFiles.map(f => ({
+    file: f,
+    issue: 'on disk but not in ledger',
+    suggested_repair: `node kg-ops.js update-processed --workspace ${ws} --file "${f}" --disposition skipped_by_rule`
+  }));
+
+  const stale = staleFiles.map(f => ({
+    file: f,
+    issue: 'in ledger but not on disk',
+    prior_disposition: pfData.files[f]?.disposition,
+    suggested_repair: `node kg-ops.js remove-processed --workspace ${ws} --file "${f}"`
+  }));
+
+  const pass = missing.length === 0 && stale.length === 0;
+  const message = pass
+    ? `Ledger: ${allFiles.length}/${allFiles.length} files accounted for`
+    : `${missing.length} untracked, ${stale.length} stale — run suggested_repair commands to reconcile`;
+
+  console.log(JSON.stringify({
     workspace_files: allFiles.length,
     ledger_entries: ledgerFiles.length,
-    missing: missing,
-    stale: stale,
-    pass: missing.length === 0
-  };
+    missing,
+    stale,
+    pass,
+    message
+  }, null, 2));
+}
 
-  if (result.pass) {
-    console.log(JSON.stringify({ ...result, message: `Ledger: ${allFiles.length}/${allFiles.length} files accounted for` }, null, 2));
-  } else {
-    console.log(JSON.stringify({ ...result, message: `MISSING: ${missing.length} files not in ledger` }, null, 2));
+function cmd_remove_processed(args) {
+  const { mg } = resolve_mg(args);
+  const file = require_arg(args, 'file');
+
+  const pfFile = path.join(mg, 'processed_files.json');
+  const data = read_json(pfFile) || { files: {} };
+
+  if (!data.files[file]) {
+    process.stderr.write(`WARNING: "${file}" not found in ledger — nothing to remove\n`);
+    return;
   }
+
+  delete data.files[file];
+  write_json(pfFile, data);
+  console.log(`Removed "${file}" from processed_files.json`);
 }
 
 function cmd_verify_quotes(args) {
@@ -297,8 +334,19 @@ function cmd_verify_quotes(args) {
     if (!fs.existsSync(factsDir)) continue;
 
     for (const factFile of fs.readdirSync(factsDir).filter(f => f.endsWith('.json'))) {
-      const data = read_json(path.join(factsDir, factFile));
-      if (!data || !data.facts) continue;
+      let data;
+      try {
+        data = read_json(path.join(factsDir, factFile));
+      } catch (e) {
+        results.failed++;
+        results.errors.push({ domain, file: factFile, error: `Parse error: ${e.message}` });
+        continue;
+      }
+      if (!data || !data.facts) {
+        results.failed++;
+        results.errors.push({ domain, file: factFile, error: !data ? 'File empty or unreadable' : 'No facts array in file' });
+        continue;
+      }
 
       for (const fact of data.facts) {
         if (!fact.source || !fact.source.quote || !fact.source.document) {
@@ -369,18 +417,34 @@ function cmd_verify_edges(args) {
     }
   }
 
+  // Derive domain from source string for repair commands
+  function domain_from_source(source) {
+    if (source === 'cross_domain.json') return '_cross_domain';
+    return source.split('/')[0];
+  }
+
   // Check all edges
   function checkEdges(edges, source) {
+    const domain = domain_from_source(source);
     for (const edge of edges) {
       let ok = true;
+      const removeCmd = `node kg-write.js remove-edge --workspace ${mg.replace('/.magellan', '')} --domain ${domain} --from "${edge.from}" --to "${edge.to}" --type ${edge.type}`;
       if (!existingEntities.has(edge.from)) {
         results.dangling++;
-        results.errors.push({ source, from: edge.from, to: edge.to, type: edge.type, error: `from entity "${edge.from}" not found` });
+        results.errors.push({
+          source, from: edge.from, to: edge.to, type: edge.type,
+          error: `from entity "${edge.from}" not found`,
+          suggested_repair: removeCmd
+        });
         ok = false;
       }
       if (!existingEntities.has(edge.to)) {
         results.dangling++;
-        results.errors.push({ source, from: edge.from, to: edge.to, type: edge.type, error: `to entity "${edge.to}" not found` });
+        results.errors.push({
+          source, from: edge.from, to: edge.to, type: edge.type,
+          error: `to entity "${edge.to}" not found`,
+          suggested_repair: removeCmd
+        });
         ok = false;
       }
       if (ok) results.verified++;
@@ -461,6 +525,76 @@ function cmd_verify_coverage(args) {
 // Computation
 // ---------------------------------------------------------------------------
 
+function cmd_detect_cross_contradictions(args) {
+  const { mg } = resolve_mg(args);
+
+  const crossData = read_json(path.join(mg, 'cross_domain.json'));
+  const sameAsEdges = (crossData?.edges || []).filter(e => e.type === 'SAME_AS');
+
+  const conflicts = [];
+
+  for (const edge of sameAsEdges) {
+    const [domainA, nameA] = edge.from.split(':');
+    const [domainB, nameB] = edge.to.split(':');
+    if (!domainA || !nameA || !domainB || !nameB) continue;
+
+    const entityA = read_json(path.join(mg, 'domains', domainA, 'entities', `${nameA}.json`));
+    const entityB = read_json(path.join(mg, 'domains', domainB, 'entities', `${nameB}.json`));
+    if (!entityA || !entityB) continue;
+
+    // Compare structured properties — same key, different value
+    const propsA = entityA.properties || {};
+    const propsB = entityB.properties || {};
+    for (const key of Object.keys(propsA)) {
+      if (key in propsB && String(propsA[key]) !== String(propsB[key])) {
+        conflicts.push({
+          type: 'property_mismatch',
+          entity_a: edge.from, entity_b: edge.to,
+          property: key,
+          value_a: propsA[key], value_b: propsB[key],
+          confidence: 'high'
+        });
+      }
+    }
+
+    // Flag differing entity type classifications
+    if (entityA.type !== entityB.type) {
+      conflicts.push({
+        type: 'type_mismatch',
+        entity_a: edge.from, entity_b: edge.to,
+        type_a: entityA.type, type_b: entityB.type,
+        confidence: 'medium'
+      });
+    }
+  }
+
+  // Entities with identical names across domains but no SAME_AS edge
+  const linked = new Set(sameAsEdges.flatMap(e => [e.from, e.to]));
+  const byName = {};
+  for (const domain of get_domains(mg)) {
+    const entityDir = path.join(mg, 'domains', domain, 'entities');
+    if (!fs.existsSync(entityDir)) continue;
+    for (const f of fs.readdirSync(entityDir).filter(f => f.endsWith('.json'))) {
+      const e = read_json(path.join(entityDir, f));
+      if (!e || !e.name) continue;
+      const key = e.name.toLowerCase().trim();
+      if (!byName[key]) byName[key] = [];
+      byName[key].push(e.entity_id);
+    }
+  }
+  const unlinked_candidates = Object.entries(byName)
+    .filter(([, ids]) => ids.length > 1 && !ids.every(id => linked.has(id)))
+    .map(([name, ids]) => ({ name, entities: ids }));
+
+  console.log(JSON.stringify({
+    same_as_pairs_checked: sameAsEdges.length,
+    conflicts_found: conflicts.length,
+    conflicts,
+    unlinked_name_collisions: unlinked_candidates.length,
+    unlinked_candidates
+  }, null, 2));
+}
+
 function cmd_hub_scores(args) {
   const { mg } = resolve_mg(args);
   const domain = require_arg(args, 'domain');
@@ -532,12 +666,14 @@ function cmd_hub_scores(args) {
 const COMMANDS = {
   'update-state': cmd_update_state,
   'update-processed': cmd_update_processed,
+  'remove-processed': cmd_remove_processed,
   'rebuild-index': cmd_rebuild_index,
   'hash-check': cmd_hash_check,
   'verify-ledger': cmd_verify_ledger,
   'verify-quotes': cmd_verify_quotes,
   'verify-edges': cmd_verify_edges,
   'verify-coverage': cmd_verify_coverage,
+  'detect-cross-contradictions': cmd_detect_cross_contradictions,
   'hub-scores': cmd_hub_scores
 };
 
@@ -550,17 +686,22 @@ State Management:
   update-state       Update state.json (--step N, --notes "...", --set-last-run)
   update-processed   Update processed_files.json entry
                      --file <path> --disposition <enum> [--domain, --fact-count, --hash, --error]
+  remove-processed   Remove a stale entry from processed_files.json
+                     --file <path>
   rebuild-index      Rebuild index.json from domain files
 
 Hash Operations:
   hash-check         Scan workspace, compare hashes against processed_files.json
-                     Returns: {new: [...], changed: [...], unchanged: [...]}
+                     Returns: {new: [...], changed: [...], unchanged: [...], forced: [...]}
+                     --force  Re-queue unchanged files for re-ingestion (use when content was edited then reverted)
 
 Verification:
   verify-ledger      Reconcile workspace files against processed_files.json
   verify-quotes      Grep every fact's quote against its source document
   verify-edges       Check all edge from/to entity IDs exist as files
   verify-coverage    Coverage matrix: facts and entity refs per source file
+  detect-cross-contradictions  Scan SAME_AS pairs for property/type conflicts
+                               and flag same-named entities with no SAME_AS edge
 
 Computation:
   hub-scores         Calculate hub scores for a domain (--domain <name>)

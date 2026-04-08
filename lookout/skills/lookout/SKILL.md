@@ -46,9 +46,11 @@ project state.
 Run the Claude Code provider (see `references/provider-claude-code.md`
 for full source details, parsing logic, and classification rules):
 
-1. **Release notes**: Read the output of the `/release-notes` command
-   content. Parse version headers. Filter to versions newer than
-   `last_seen_version`. Classify each bullet.
+1. **Release notes**: Fetch `https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md`
+   via WebFetch. The `/release-notes` command is now an interactive UI picker
+   (v2.1.92) and cannot be read programmatically. Parse version headers from
+   the CHANGELOG. Filter to versions newer than `last_seen_version`. Classify
+   each bullet.
 
 2. **Blog**: Use WebFetch on https://www.anthropic.com/news.
    Extract posts newer than `last_checked`.
@@ -70,6 +72,38 @@ for full source details, parsing logic, and classification rules):
 For sources 2-4, each fetch is independent. If one fails, report
 it and continue with the others. Never block the entire check on
 a single source failure.
+
+### Step 2.5: Project & Global Config Scan
+
+After fetching changes, cross-reference them against the user's live setup.
+This surfaces actionable improvements and catches config that is now redundant.
+
+**A. Scan project subfolders**
+
+1. List immediate subdirectories of the current working directory's parent
+   (or the user's known projects root — check memory for a `projects_root`
+   entry, otherwise use the cwd's parent).
+2. For each project, check for `.claude/CLAUDE.md`, `.claude/rules/`, and
+   `.claude/settings.json`.
+3. For each change in the triage list, ask: "Does this project use the pattern
+   this change affects?" If yes, flag it.
+4. Collect findings as `[PROJECT <name>]` items for the summary.
+
+**B. Audit global config for redundancy**
+
+Read `~/.claude/settings.json` and `~/.claude/rules/*.md`. For each item,
+ask: "Is this still non-default behavior, or does Claude now handle this
+natively?" Flag anything that is now redundant as `[CLEANUP]`.
+
+Specific checks:
+- Bash allow rules for commands that have dedicated Claude tools (Read, Grep,
+  Glob, Write, Edit) — these are redundant if CLAUDE.md already instructs
+  Claude to use dedicated tools.
+- Rules file instructions that restate Claude's current default behavior.
+- Settings keys that are now the default (e.g., `showThinkingSummaries: false`
+  is the default since v2.1.89 — no need to set it explicitly).
+
+Add `[CLEANUP]` findings to the summary alongside `[NEW]` and `[BREAKING]`.
 
 ### Step 3: Present Summary
 

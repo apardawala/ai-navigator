@@ -147,3 +147,36 @@ on shared rules.
 
 All outputs go in `<workspace>/.magellan/`. See the file-conventions skill for
 the complete directory layout and JSON schemas.
+
+## Tool Conventions
+
+### Content-Addressed IDs
+Facts, contradictions, and questions all use content-addressed IDs (SHA-256 prefix).
+The tools generate these automatically — do not invent IDs manually.
+- Fact: `f_<hash>` derived from subject + predicate + object
+- Contradiction: `c_<hash>` derived from quote1 + quote2
+- Question: `oq_<hash>` derived from domain + question text
+
+Duplicate writes are silently skipped with a "Skipped: already exists" message.
+This is correct behaviour — do not retry.
+
+### `_cross_domain` Special Domain
+Use `--domain _cross_domain` with `add-contradiction` to write cross-domain
+contradictions to `.magellan/cross_domain_contradictions.json`. This mirrors
+the `_cross_domain` convention already used by `add-edge`.
+
+### Repair Commands
+When `verify-ledger` or `verify-edges` report issues, each error includes a
+`suggested_repair` field with the exact command to run. Available repair tools:
+- `kg-ops.js remove-processed --workspace <path> --file <file>` — remove stale ledger entry
+- `kg-write.js remove-edge --workspace <path> --domain <d> --from <id> --to <id> --type <t>` — remove dangling edge
+
+### Cross-Domain Contradiction Detection
+Run `kg-ops.js detect-cross-contradictions --workspace <path>` after any pipeline
+run that adds SAME_AS edges. Reviews property mismatches and type conflicts between
+linked entities, and surfaces same-named entities with no SAME_AS edge yet.
+
+### Forced Re-ingestion
+If a file was edited and reverted (same hash, but facts may have drifted), use
+`kg-ops.js hash-check --workspace <path> --force` to re-queue it under `forced`
+instead of `unchanged`.

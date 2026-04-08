@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -63,6 +64,13 @@ function write_json(filepath, data) {
   fs.writeFileSync(filepath, content, 'utf8');
   // Post-write validation
   JSON.parse(fs.readFileSync(filepath, 'utf8'));
+}
+
+function content_id(prefix, ...parts) {
+  return prefix + '_' + crypto.createHash('sha256')
+    .update(parts.join('\x00'))
+    .digest('hex')
+    .slice(0, 8);
 }
 
 function snake_case(str) {
@@ -244,6 +252,20 @@ function cmd_add_fact(args) {
   validate_quote(sourceQuote);
 
   const tags = args.tags ? args.tags.split(',').map(t => t.trim()) : [];
+  const factId = content_id('f', subject, predicate, object);
+
+  // Dedup: scan all fact files in domain for existing fact_id
+  const factsDir = path.join(mg, 'domains', domain, 'facts');
+  if (fs.existsSync(factsDir)) {
+    for (const f of fs.readdirSync(factsDir).filter(f => f.endsWith('.json'))) {
+      const existing = read_json(path.join(factsDir, f));
+      if (existing && existing.facts && existing.facts.some(fact => fact.fact_id === factId)) {
+        console.log(`Skipped: fact ${factId} already exists in ${domain}/facts/${f}`);
+        return;
+      }
+    }
+  }
+
   const sourceSlug = slug(path.basename(sourceDoc, path.extname(sourceDoc)));
   const factFile = path.join(mg, 'domains', domain, 'facts', `${sourceSlug}.json`);
 
@@ -259,6 +281,7 @@ function cmd_add_fact(args) {
   }
 
   const fact = {
+    fact_id: factId,
     statement,
     subject,
     subject_domain: domain,
@@ -409,7 +432,10 @@ function cmd_add_edge(args) {
 function cmd_add_contradiction(args) {
   const mg = resolve_workspace(args);
   const domain = require_arg(args, 'domain');
-  require_domain(mg, domain);
+
+  // _cross_domain is a special domain for cross-domain contradictions
+  const isCrossDomain = domain === '_cross_domain';
+  if (!isCrossDomain) require_domain(mg, domain);
 
   const description = require_arg(args, 'description');
   const severity = require_arg(args, 'severity');
@@ -426,14 +452,20 @@ function cmd_add_contradiction(args) {
   validate_quote(quote1);
   validate_quote(quote2);
 
-  const cFile = path.join(mg, 'domains', domain, 'contradictions.json');
+  const cFile = isCrossDomain
+    ? path.join(mg, 'cross_domain_contradictions.json')
+    : path.join(mg, 'domains', domain, 'contradictions.json');
   let data = read_json(cFile);
   if (!data) {
     data = { active: [], resolved: [] };
   }
 
-  const nextNum = data.active.length + data.resolved.length + 1;
-  const contradictionId = `c_${String(nextNum).padStart(3, '0')}`;
+  const contradictionId = content_id('c', quote1, quote2);
+  const alreadyExists = [...data.active, ...data.resolved].some(c => c.contradiction_id === contradictionId);
+  if (alreadyExists) {
+    console.log(`Skipped: contradiction ${contradictionId} already exists`);
+    return;
+  }
 
   const entry = {
     contradiction_id: contradictionId,
@@ -451,7 +483,40 @@ function cmd_add_contradiction(args) {
 
   data.active.push(entry);
   write_json(cFile, data);
-  console.log(`Added contradiction ${contradictionId} (${severity}) to ${domain}/contradictions.json`);
+  const dest = isCrossDomain ? 'cross_domain_contradictions.json' : `${domain}/contradictions.json`;
+  console.log(`Added contradiction ${contradictionId} (${severity}) to ${dest}`);
+}
+
+function cmd_remove_edge(args) {
+  const mg = resolve_workspace(args);
+  const domain = require_arg(args, 'domain');
+  const from = require_arg(args, 'from');
+  const to = require_arg(args, 'to');
+  const type = require_arg(args, 'type');
+
+  const isCrossDomain = domain === '_cross_domain';
+  if (!isCrossDomain) require_domain(mg, domain);
+
+  const relFile = isCrossDomain
+    ? path.join(mg, 'cross_domain.json')
+    : path.join(mg, 'domains', domain, 'relationships.json');
+
+  const data = read_json(relFile);
+  if (!data || !data.edges) {
+    process.stderr.write(`WARNING: No relationships file found for domain "${domain}"\n`);
+    return;
+  }
+
+  const before = data.edges.length;
+  data.edges = data.edges.filter(e => !(e.from === from && e.to === to && e.type === type));
+
+  if (data.edges.length === before) {
+    process.stderr.write(`WARNING: Edge ${type} (${from} → ${to}) not found — nothing removed\n`);
+    return;
+  }
+
+  write_json(relFile, data);
+  console.log(`Removed edge ${type} (${from} → ${to}) from ${isCrossDomain ? 'cross_domain.json' : `${domain}/relationships.json`}`);
 }
 
 function cmd_add_question(args) {
@@ -476,8 +541,12 @@ function cmd_add_question(args) {
     data = { active: [], resolved: [] };
   }
 
-  const nextNum = data.active.length + data.resolved.length + 1;
-  const questionId = `oq_${String(nextNum).padStart(3, '0')}`;
+  const questionId = content_id('oq', domain, question);
+  const alreadyExists = [...data.active, ...data.resolved].some(q => q.question_id === questionId);
+  if (alreadyExists) {
+    console.log(`Skipped: question ${questionId} already exists`);
+    return;
+  }
 
   const entry = {
     question_id: questionId,
@@ -553,6 +622,7 @@ const COMMANDS = {
   'add-entity': cmd_add_entity,
   'add-edge': cmd_add_edge,
   'add-contradiction': cmd_add_contradiction,
+  'remove-edge': cmd_remove_edge,
   'add-question': cmd_add_question,
   'validate': cmd_validate
 };
@@ -579,6 +649,9 @@ Commands:
   add-entity          Create an entity file (evidence via stdin)
   add-edge            Append an edge to relationships.json
   add-contradiction   Add a contradiction to the active array
+  remove-edge         Remove an edge from relationships.json or cross_domain.json
+                      --domain <name|_cross_domain> --from <id> --to <id> --type <type>
+                      Use --domain _cross_domain to write to cross_domain_contradictions.json
   add-question        Add an open question to the active array
   validate            Validate a KG JSON file`);
   process.exit(0);
