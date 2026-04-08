@@ -170,6 +170,20 @@ No Magellan workspace found.
 read `session_notes` to restore working context, then offer to resume from
 the last completed step.
 
+**Environment detection** (runs every session, after guides are in place):
+
+Use Glob to check for AS/400 indicators in the workspace:
+- Directories named `QRPGSRC`, `QDDSSRC`, `QCLSRC`, `QCLRSRC`, or `QMNUSRC`
+- Files with `.rpgle`, `.sqlrpgle`, `.cblle`, or `.clle` extensions
+
+If any match: read `.magellan/language_guides/as400_modernization.md` once and
+keep it in context for the full pipeline run. Display:
+`AS/400 environment detected — environment guide loaded.`
+
+This is the only environment guide check currently defined. Future environment
+guides (e.g., mainframe z/OS, OpenVMS) should follow the same pattern: add
+detection indicators here and a corresponding guide in `language_guides/`.
+
 **Discover files**:
 
 - **Full mode**: Use Glob to list all files, excluding `.magellan/` and `.git/`.
