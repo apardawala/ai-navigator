@@ -181,6 +181,18 @@ The `<id>` can be a contradiction ID (e.g., `c_001`) or a question ID (e.g., `oq
 Not found: <id>. Use /magellan:ask to list active contradictions and questions.
 ```
 
+## Logging
+
+After every significant action, log it using
+`node ~/.claude/tools/magellan/kg-ops.js log --workspace <path>`:
+
+- File ingestion: `--action ingest --detail "<file> → N facts, M contradictions"`
+- Directory ingestion: `--action ingest --detail "<dir> — N files processed, M skipped, K total facts"`
+- Correction: `--action correction --detail "<domain> — <summary of correction>"`
+- Resolve contradiction: `--action resolve --detail "c_xxx (<domain>) — <resolution summary>"`
+- Resolve question: `--action resolve --detail "oq_xxx (<domain>) — <answer summary>"`
+- Codebase analysis: `--action codebase --detail "<path> — N files, M components, K integrations"`
+
 ## Notes
 
 - Every fact traces to a source document. Corrections create a record document.

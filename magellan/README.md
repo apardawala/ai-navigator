@@ -49,9 +49,13 @@ git clone https://github.com/Slalom/magellan-claude.git && cd magellan-claude &&
 
 ```text
 .magellan/
+  summary.md                       ← Compressed KG overview for session start
   onboarding_guide.md              ← Briefing for new team members
+  onboarding_guide.html            ← Interactive version (opens in browser)
+  graph.html                       ← Interactive KG explorer (vis.js, opens in browser)
   contradictions_dashboard.md      ← Contradictions & open questions (the priority)
   contradictions_dashboard.html    ← Print-friendly version
+  log.md                           ← Activity log (append-only, one line per event)
   diagrams/                        ← C4 architecture diagrams (Mermaid + PlantUML)
 
   domains/<domain>/
@@ -86,7 +90,8 @@ The pipeline runs with quality gates after every step:
 
 **Phase 1 — Discovery**: Read files → extract atomic facts → build entities and
 relationships → detect contradictions → link across domains → summarize each
-domain → generate onboarding guide, dashboard, and C4 diagrams.
+domain → generate onboarding guide (markdown + interactive HTML), dashboard,
+C4 diagrams, and interactive graph explorer.
 
 **Phase 2 — Design**: Formalize business rules (HARD / SOFT / QUESTIONABLE) →
 generate DDD specs → implementation contracts → export rules as DMN, JSON, CSV,

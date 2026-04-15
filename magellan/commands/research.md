@@ -101,6 +101,9 @@ graph:
 
 4. **Display summary**: Total topics researched, reports generated, paths.
 
+5. **Log**: `node ~/.claude/tools/magellan/kg-ops.js log --workspace <path>
+   --action research --detail "<topic> — report generated at .magellan/research/<file>"`.
+
 ## Rules
 
 - Every finding MUST have a source URL. No unsourced claims.

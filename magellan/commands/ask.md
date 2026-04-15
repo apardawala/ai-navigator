@@ -37,6 +37,9 @@ Answer questions about the target systems using the knowledge graph.
    - Any relevant contradictions or open questions
    - Low-confidence facts flagged explicitly
 
+5. Log the query using `node ~/.claude/tools/magellan/kg-ops.js log --workspace <path>
+   --action query --detail "<question summary> → N entities cited"`.
+
 ## Examples
 
 ```

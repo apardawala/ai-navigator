@@ -16,6 +16,16 @@ loads this file at the start of every run.
 4. **The model does the heavy lifting. Humans steer and correct.** Extract
    aggressively, surface everything, and let the human decide what matters.
 
+## Session Start
+
+If `.magellan/summary.md` exists, read it before doing anything else. It
+provides a compressed overview of the knowledge graph — domains, top
+contradictions, open questions, thin coverage, and recent activity. Use it
+to orient yourself without loading the full KG.
+
+Before committing changes, regenerate the summary:
+`node ~/.claude/tools/magellan/kg-ops.js summary --workspace <path>`
+
 ## Context Discipline
 
 Load only the relevant skill for the current pipeline step — not all skills

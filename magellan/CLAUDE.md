@@ -24,6 +24,13 @@ knowledge from collected materials and builds a queryable knowledge graph.
 - **`/magellan:ask` cross-domain traversals** — Use Opus for multi-hop graph
   walks and complex structural queries.
 
+## Session Start
+
+When working on a project with an existing `.magellan/` directory, read
+`.magellan/summary.md` first for a compressed KG overview (domains,
+contradictions, open questions, recent activity). Before committing changes,
+regenerate it: `node ~/.claude/tools/magellan/kg-ops.js summary --workspace <path>`
+
 ## Four Principles
 
 1. Every fact traces to a source document. Nothing is invented.
@@ -180,3 +187,14 @@ linked entities, and surfaces same-named entities with no SAME_AS edge yet.
 If a file was edited and reverted (same hash, but facts may have drifted), use
 `kg-ops.js hash-check --workspace <path> --force` to re-queue it under `forced`
 instead of `unchanged`.
+
+### Activity Log
+Every significant action is logged to `.magellan/log.md` via
+`kg-ops.js log --workspace <path> --action <type> --detail "..."`.
+Git user is detected automatically. See file-conventions for the full list of
+actions and format.
+
+### Summary and Graph
+Before committing changes, regenerate the session-start summary and graph:
+- `kg-ops.js summary --workspace <path>` → `.magellan/summary.md`
+- `kg-ops.js graph --workspace <path>` → `.magellan/graph.html`

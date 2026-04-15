@@ -99,6 +99,310 @@ function validate_enum(val, allowed, label) {
 }
 
 // ---------------------------------------------------------------------------
+// Activity log
+// ---------------------------------------------------------------------------
+
+const LOG_ACTIONS = [
+  'pipeline', 'ingest', 'query', 'resolve', 'correction',
+  'add-entity', 'modify-entity', 'add-edge', 'remove-edge',
+  'add-contradiction', 'add-question', 'add-domain',
+  'quality-gate', 'compress', 'codebase', 'research', 'summary'
+];
+
+function get_git_user() {
+  try {
+    return execSync('git config user.name', { encoding: 'utf8' }).trim();
+  } catch (_) {
+    try {
+      return require('os').userInfo().username;
+    } catch (_) {
+      return 'unknown';
+    }
+  }
+}
+
+function cmd_log(args) {
+  const { mg } = resolve_mg(args);
+  const action = require_arg(args, 'action');
+  validate_enum(action, LOG_ACTIONS, 'action');
+  const detail = require_arg(args, 'detail');
+  const user = get_git_user();
+  const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+  const logFile = path.join(mg, 'log.md');
+  if (!fs.existsSync(logFile)) {
+    fs.writeFileSync(logFile, '# Magellan Activity Log\n\n', 'utf8');
+  }
+
+  const entry = `- ${timestamp} | ${action} | ${user} | ${detail}\n`;
+  fs.appendFileSync(logFile, entry, 'utf8');
+  console.log(`Logged: ${action} | ${detail}`);
+}
+
+// ---------------------------------------------------------------------------
+// Summary generation (wake-up mode)
+// ---------------------------------------------------------------------------
+
+function cmd_summary(args) {
+  const { mg } = resolve_mg(args);
+  const domains = fs.existsSync(path.join(mg, 'domains'))
+    ? get_domains(mg) : [];
+
+  const state = read_json(path.join(mg, 'state.json')) || {};
+  const index = read_json(path.join(mg, 'index.json')) || {};
+
+  // Domain overview
+  const domainLines = [];
+  const thinDomains = [];
+  for (const domain of domains) {
+    const stats = (index.domains && index.domains[domain]) || {};
+    const ec = stats.entity_count || 0;
+    const edg = stats.edge_count || 0;
+    const cc = stats.contradiction_count || 0;
+    const qc = stats.question_count || 0;
+    domainLines.push(`  ${domain}: ${ec} entities, ${edg} edges, ${cc} contradictions, ${qc} open questions`);
+    if (ec < 5) thinDomains.push(domain);
+  }
+
+  // Top contradictions (by severity: critical > high > medium > low)
+  const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+  const allContradictions = [];
+  for (const domain of domains) {
+    const cFile = path.join(mg, 'domains', domain, 'contradictions.json');
+    const cData = read_json(cFile);
+    if (cData && cData.active) {
+      for (const c of cData.active) {
+        allContradictions.push({ ...c, domain });
+      }
+    }
+  }
+  allContradictions.sort((a, b) =>
+    (severityOrder[a.severity] || 3) - (severityOrder[b.severity] || 3)
+  );
+  const topContradictions = allContradictions.slice(0, 5);
+
+  // Top open questions (by priority)
+  const allQuestions = [];
+  for (const domain of domains) {
+    const qFile = path.join(mg, 'domains', domain, 'open_questions.json');
+    const qData = read_json(qFile);
+    if (qData && qData.active) {
+      for (const q of qData.active) {
+        allQuestions.push({ ...q, domain });
+      }
+    }
+  }
+  allQuestions.sort((a, b) =>
+    (severityOrder[a.priority] || 3) - (severityOrder[b.priority] || 3)
+  );
+  const topQuestions = allQuestions.slice(0, 5);
+
+  // Recent log entries
+  const logFile = path.join(mg, 'log.md');
+  let recentLog = [];
+  if (fs.existsSync(logFile)) {
+    const lines = fs.readFileSync(logFile, 'utf8').split('\n')
+      .filter(l => l.startsWith('- '));
+    recentLog = lines.slice(-5);
+  }
+
+  // Build markdown
+  const parts = [];
+  parts.push('# Magellan Summary');
+  parts.push('');
+  parts.push('> Auto-generated at commit time. Do not edit manually.');
+  parts.push('');
+
+  // Pipeline state
+  if (state.pipeline_step || state.session_notes) {
+    parts.push('## Pipeline State');
+    if (state.pipeline_step) parts.push(`  Step: ${state.pipeline_step}`);
+    if (state.session_notes) parts.push(`  Notes: ${state.session_notes}`);
+    parts.push('');
+  }
+
+  // Domains
+  parts.push(`## Domains (${domains.length})`);
+  if (domainLines.length > 0) {
+    parts.push(domainLines.join('\n'));
+  } else {
+    parts.push('  No domains yet.');
+  }
+  parts.push(`  Totals: ${index.total_entities || 0} entities, ${index.total_edges || 0} edges`);
+  parts.push('');
+
+  // Thin coverage
+  if (thinDomains.length > 0) {
+    parts.push('## Thin Coverage');
+    parts.push(`  ${thinDomains.join(', ')} — fewer than 5 entities, needs more source materials`);
+    parts.push('');
+  }
+
+  // Top contradictions
+  if (topContradictions.length > 0) {
+    parts.push(`## Top Contradictions (${allContradictions.length} active)`);
+    for (const c of topContradictions) {
+      parts.push(`  [${c.severity}] ${c.contradiction_id} (${c.domain}): ${c.description}`);
+    }
+    parts.push('');
+  }
+
+  // Top open questions
+  if (topQuestions.length > 0) {
+    parts.push(`## Top Open Questions (${allQuestions.length} active)`);
+    for (const q of topQuestions) {
+      parts.push(`  [${q.priority}] ${q.question_id} (${q.domain}): ${q.question}`);
+    }
+    parts.push('');
+  }
+
+  // Recent activity
+  if (recentLog.length > 0) {
+    parts.push('## Recent Activity');
+    for (const line of recentLog) {
+      parts.push(line);
+    }
+    parts.push('');
+  }
+
+  const content = parts.join('\n') + '\n';
+  const summaryFile = path.join(mg, 'summary.md');
+  fs.writeFileSync(summaryFile, content, 'utf8');
+  console.log(`Generated summary.md (${domains.length} domains, ${allContradictions.length} contradictions, ${allQuestions.length} open questions)`);
+}
+
+// ---------------------------------------------------------------------------
+// Graph visualization
+// ---------------------------------------------------------------------------
+
+function cmd_graph(args) {
+  const { mg } = resolve_mg(args);
+  const domains = fs.existsSync(path.join(mg, 'domains'))
+    ? get_domains(mg) : [];
+
+  const nodes = [];
+  const edges = [];
+  const domainColors = {};
+  const palette = [
+    '#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f',
+    '#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac'
+  ];
+
+  // Collect entities as nodes
+  for (let di = 0; di < domains.length; di++) {
+    const domain = domains[di];
+    domainColors[domain] = palette[di % palette.length];
+    const entityDir = path.join(mg, 'domains', domain, 'entities');
+    if (!fs.existsSync(entityDir)) continue;
+    for (const ef of fs.readdirSync(entityDir).filter(f => f.endsWith('.json'))) {
+      const entity = read_json(path.join(entityDir, ef));
+      if (!entity) continue;
+      nodes.push({
+        id: entity.entity_id,
+        label: entity.name || ef.replace('.json', ''),
+        domain: domain,
+        type: entity.type || '',
+        summary: (entity.summary || '').substring(0, 200),
+        color: domainColors[domain]
+      });
+    }
+  }
+
+  // Collect intra-domain edges
+  for (const domain of domains) {
+    const relFile = path.join(mg, 'domains', domain, 'relationships.json');
+    const relData = read_json(relFile);
+    if (relData && relData.edges) {
+      for (const e of relData.edges) {
+        edges.push({ from: e.from, to: e.to, label: e.type, color: '#999' });
+      }
+    }
+  }
+
+  // Collect cross-domain edges
+  const crossFile = path.join(mg, 'cross_domain.json');
+  const crossData = read_json(crossFile);
+  if (crossData && crossData.edges) {
+    for (const e of crossData.edges) {
+      edges.push({ from: e.from, to: e.to, label: e.type, color: '#e15759', dashes: true });
+    }
+  }
+
+  // Build legend
+  const legendItems = domains.map(d =>
+    `<span style="display:inline-block;width:12px;height:12px;background:${domainColors[d]};border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${d}`
+  ).join('&nbsp;&nbsp;&nbsp;');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Magellan Knowledge Graph</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; }
+  #header { padding: 12px 20px; background: #16213e; display: flex; justify-content: space-between; align-items: center; }
+  #header h1 { font-size: 16px; font-weight: 600; }
+  #legend { font-size: 12px; }
+  #stats { font-size: 12px; opacity: 0.7; }
+  #graph { width: 100%; height: calc(100vh - 90px); }
+  #detail { position: fixed; bottom: 0; left: 0; right: 0; background: #16213e; padding: 10px 20px; font-size: 13px; border-top: 1px solid #333; min-height: 44px; }
+  #detail .name { font-weight: 600; font-size: 14px; }
+  #detail .meta { opacity: 0.7; margin-top: 2px; }
+  #search { position: fixed; top: 50px; right: 20px; z-index: 10; }
+  #search input { background: #16213e; border: 1px solid #444; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; width: 200px; font-size: 13px; }
+</style>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+<div id="header">
+  <h1>Magellan Knowledge Graph</h1>
+  <div id="legend">${legendItems}</div>
+  <div id="stats">${nodes.length} entities &middot; ${edges.length} edges &middot; ${domains.length} domains</div>
+</div>
+<div id="search"><input type="text" id="searchInput" placeholder="Search entities..."></div>
+<div id="graph"></div>
+<div id="detail">Click a node to see details.</div>
+<script>
+const nodesData = ${JSON.stringify(nodes)};
+const edgesData = ${JSON.stringify(edges)};
+const nodes = new vis.DataSet(nodesData.map(n => ({
+  id: n.id, label: n.label, color: { background: n.color, border: n.color, highlight: { background: '#fff', border: n.color }},
+  font: { color: '#e0e0e0', size: 12 }, shape: 'dot', size: 10,
+  _domain: n.domain, _type: n.type, _summary: n.summary
+})));
+const edges = new vis.DataSet(edgesData.map((e, i) => ({
+  id: i, from: e.from, to: e.to, label: e.label,
+  color: { color: e.color, highlight: '#fff' }, dashes: e.dashes || false,
+  font: { color: '#888', size: 9, strokeWidth: 0 }, arrows: 'to', smooth: { type: 'curvedCW', roundness: 0.15 }
+})));
+const container = document.getElementById('graph');
+const network = new vis.Network(container, { nodes, edges }, {
+  physics: { barnesHut: { gravitationalConstant: -3000, springLength: 120, damping: 0.3 }},
+  interaction: { hover: true, tooltipDelay: 100 }
+});
+network.on('click', function(params) {
+  const detail = document.getElementById('detail');
+  if (params.nodes.length > 0) {
+    const n = nodesData.find(x => x.id === params.nodes[0]);
+    if (n) detail.innerHTML = '<span class="name">' + n.id + '</span><div class="meta">' + n.type + ' &middot; ' + n.domain + (n.summary ? ' &middot; ' + n.summary : '') + '</div>';
+  } else { detail.innerHTML = 'Click a node to see details.'; }
+});
+document.getElementById('searchInput').addEventListener('input', function(e) {
+  const q = e.target.value.toLowerCase();
+  if (!q) { nodes.forEach(n => nodes.update({ id: n.id, hidden: false })); return; }
+  nodesData.forEach(n => { nodes.update({ id: n.id, hidden: !n.label.toLowerCase().includes(q) && !n.id.toLowerCase().includes(q) }); });
+});
+</script>
+</body>
+</html>`;
+
+  const graphFile = path.join(mg, 'graph.html');
+  fs.writeFileSync(graphFile, html, 'utf8');
+  console.log(`Generated graph.html (${nodes.length} nodes, ${edges.length} edges, ${domains.length} domains)`);
+}
+
+// ---------------------------------------------------------------------------
 // State management
 // ---------------------------------------------------------------------------
 
@@ -664,6 +968,9 @@ function cmd_hub_scores(args) {
 // ---------------------------------------------------------------------------
 
 const COMMANDS = {
+  'log': cmd_log,
+  'summary': cmd_summary,
+  'graph': cmd_graph,
   'update-state': cmd_update_state,
   'update-processed': cmd_update_processed,
   'remove-processed': cmd_remove_processed,
@@ -681,6 +988,21 @@ const { command, args } = parseArgs(process.argv.slice(2));
 
 if (!command || command === 'help') {
   console.log(`Usage: node kg-ops.js <command> --workspace <path> [options]
+
+Activity Log:
+  log                Append an entry to .magellan/log.md
+                     --action <enum> --detail "description"
+                     Git user is detected automatically.
+                     Actions: ${LOG_ACTIONS.join(', ')}
+
+Summary:
+  summary            Generate .magellan/summary.md — compressed KG overview
+                     for session start context. Run before committing changes.
+
+Visualization:
+  graph              Generate .magellan/graph.html — interactive knowledge graph
+                     explorer. Opens in browser. Nodes colored by domain, search,
+                     click for details.
 
 State Management:
   update-state       Update state.json (--step N, --notes "...", --set-last-run)

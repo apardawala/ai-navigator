@@ -31,8 +31,27 @@ domain summaries, open questions, and contradictions — not from the raw entity
    all domains, read each domain's files and aggregate.
 4. Read `.magellan/index.json` using the Read tool for overall stats.
 5. Read `.magellan/cross_domain.json` using the Read tool for inter-domain connections.
-6. Synthesize the guide following the structure below.
-7. Write the guide to `.magellan/onboarding_guide.md` using the Write tool.
+6. Read the project's Claude Code configuration for Section 7 (Contributing):
+   - `CLAUDE.md` (project root) — working principles
+   - `.claude/settings.json` — provider, plugins, MCP servers (if exists)
+   - `.claude/rules/` — any project rules files (if exists)
+   If none exist, note that no project-specific config was found.
+7. Synthesize the guide following the structure below.
+8. Write the guide in two formats:
+   a. `.magellan/onboarding_guide.md` — Markdown for agents and LLM consumption.
+   b. `.magellan/onboarding_guide.html` — Interactive single-page HTML for humans.
+      The HTML version should include:
+      - Scroll-based modules matching the markdown sections
+      - The same content as the markdown, rendered with clean typography
+      - Animated or interactive diagrams for system relationships and domain
+        connections (use vis.js for an interactive knowledge graph view if
+        cross_domain.json has data, otherwise use simple CSS/SVG diagrams)
+      - Collapsible sections for domains, gotchas, and open questions
+      - A coverage summary table with visual indicators (progress bars or
+        color coding for thin/strong coverage)
+      - Inline entity cross-references as clickable anchors
+      - Self-contained — no external dependencies (inline all CSS/JS)
+      Use the Write tool for both files.
 
 ## Guide Structure
 
@@ -132,14 +151,67 @@ next:
 | transportation | 4 | 2 documents | **Thin — needs more source materials** |
 ```
 
-### 7. Suggested First Touches
+### 7. Contributing to the Knowledge Graph
 
-Auto-generate 2-3 safe, low-risk discovery tasks for a new engineer joining
-the engagement. These tasks should be:
+This section helps new team members set up their environment and start
+contributing to the project's central knowledge graph.
 
-- **Low-risk**: read/investigate only, not change
-- **Domain-specific**: builds expertise in one area
-- **Directly useful**: resolves an open question or adds coverage
+#### 7a. Setup
+
+Provide step-by-step instructions to get a new contributor running:
+
+1. **Install Claude Code** — Link to the official install guide
+   (https://code.claude.com/docs/en/quickstart). Note the project's
+   preferred provider if known (check the project's `.claude/settings.json`
+   for `apiProvider`).
+2. **Install Magellan** — Run `/plugin install ai-navigator` or follow the
+   project's README if a custom install method is documented.
+3. **Project configuration** — If the project has a `.claude/settings.json`,
+   `CLAUDE.md`, or `.claude/rules/` files, mention them and summarize what
+   they configure (don't reproduce them — just say "the project has custom
+   rules for X, Y, Z").
+
+Read the project's Claude Code configuration files if they exist. If they
+don't exist, write generic setup instructions and note that no project-specific
+config was found.
+
+#### 7b. Key Commands
+
+List the Magellan commands a new contributor needs, with one-line descriptions
+and a concrete example for each:
+
+- `/magellan` — Run the full pipeline or check status
+- `/magellan:add <path>` — Add a document or directory to the KG
+- `/magellan:add --codebase <path>` — Analyze a codebase
+- `/magellan:add --correction "..."` — Record a verbal correction from a stakeholder
+- `/magellan:add --resolve <id> "..."` — Resolve a contradiction or answer an open question
+- `/magellan:ask <question>` — Query the knowledge graph
+
+Tailor the examples to this project's actual domains. If the KG has a billing
+domain, the example should be about billing, not a generic placeholder.
+
+#### 7c. Conventions
+
+Summarize the project's working principles that affect how contributors
+interact with the KG. Derive from the project's `CLAUDE.md` and
+`skills/_principles.md`:
+
+- How facts should be sourced (every fact traces to a document)
+- How contradictions are handled (they're features, not bugs)
+- What gets flagged vs. silently skipped (nothing is silently skipped)
+- Any project-specific conventions (naming, domain boundaries, etc.)
+
+Keep this to 3-5 bullet points. Don't reproduce the full CLAUDE.md.
+
+#### 7d. First Tasks
+
+Auto-generate 2-3 safe, low-risk tasks for a new contributor. Frame these
+as KG contributions, not just learning exercises. Each task should:
+
+- **Add coverage**: resolve an open question, add a thin domain's documents,
+  or clarify a contradiction
+- **Be low-risk**: read/investigate only, not restructure
+- **Build domain expertise**: focused on one area of the KG
 
 Derive suggestions from:
 - Open questions tagged for developers that could be resolved by reading
@@ -150,21 +222,23 @@ Derive suggestions from:
 Example:
 
 ```markdown
-## Suggested First Touches
+#### First Tasks
 
 1. **Review CBBLKBOOK module** — The billing domain has an open question about
    the invoice threshold (see `oq_003`). Reading the CBBLKBOOK COBOL source
-   will clarify whether the $10k or $5k threshold is active. This is a
-   well-scoped task that familiarizes you with the billing domain and the
-   AS/400 codebase.
+   will clarify whether the $10k or $5k threshold is active. Run
+   `/magellan:add --resolve oq_003 "Threshold is $5,000 per CBBLKBOOK line 42"`
+   once you find the answer.
 
 2. **Add transportation documents** — The transportation domain has only 4
-   entities from 2 source documents. Adding the dispatch manual or route
-   planning docs would significantly improve coverage.
+   entities from 2 source documents. Grab the dispatch manual from the shared
+   drive and run `/magellan:add dispatch_manual.pdf`. This will trigger
+   extraction and improve coverage.
 
 3. **Verify title transfer timing** — Contradiction `c_004` notes a conflict
-   between immediate and batch title transfers. The Title_Process_Manual.pdf
-   section 4.1 likely resolves this.
+   between immediate and batch title transfers. Read Title_Process_Manual.pdf
+   section 4.1 and run `/magellan:add --resolve c_004 "Transfers are batched
+   nightly per section 4.1"`.
 ```
 
 ### 8. Discovered Materials

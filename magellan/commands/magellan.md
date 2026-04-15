@@ -52,6 +52,15 @@ pipeline (Phase 1 Discovery + Phase 2 Design).
 5. **Context hygiene.** Use Glob to count files rather than reading them all.
    Use Read with offset/limit for large files. Read only the fields you need.
 
+6. **Log every significant action.** After completing each pipeline step and
+   quality gate, log it using `node ~/.claude/tools/magellan/kg-ops.js log`:
+   - Pipeline step completion: `--action pipeline --detail "step N complete — <summary>"`
+   - Quality gate results: `--action quality-gate --detail "step N — M blockers, K warnings"`
+   - Domain additions: `--action add-domain --detail "<domain> — 0 entities"`
+   - File ingestion totals: `--action ingest --detail "<file> → N facts, M contradictions"`
+   The tool detects the git user automatically. See file-conventions for the
+   full list of log actions.
+
 ## First Step — Load Principles
 
 Before any processing, read `skills/_principles.md`. These principles govern
@@ -359,6 +368,14 @@ Apply the diagram-generation skill. Generate both Mermaid and PlantUML for
 each level (context, containers, per-domain components).
 
 **Quality Gate.** Update state.json.
+
+### Step 9b: Graph Explorer
+
+Generate the interactive graph visualization:
+`node ~/.claude/tools/magellan/kg-ops.js graph --workspace <path>`
+
+This produces `.magellan/graph.html` — a self-contained HTML file that can be
+opened in any browser to explore the knowledge graph visually.
 
 ### Step 10: Update State and Index
 
