@@ -1,6 +1,6 @@
 {
-  "name": "slalom",
-  "description": "Slalom AI Navigator — Magellan and Lookout plugins for Claude Code",
+  "name": "apardawala",
+  "description": "AI Navigator — Magellan and Lookout plugins for Claude Code",
   "plugins": [
     {
       "name": "magellan",

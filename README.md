@@ -39,7 +39,7 @@ against current best practices on first install.
 ### Both plugins (recommended)
 
 ```bash
-git clone https://github.com/Slalom/ai-navigator.git
+git clone https://github.com/apardawala/ai-navigator.git
 cd ai-navigator && ./install.sh
 ```
 
@@ -56,8 +56,8 @@ cd ai-navigator/lookout && ./install.sh
 ### Via marketplace
 
 ```
-/plugin install magellan@slalom
-/plugin install lookout@slalom
+/plugin install magellan@apardawala
+/plugin install lookout@apardawala
 ```
 
 ## Design Philosophy

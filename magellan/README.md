@@ -17,17 +17,17 @@ context at every stage.
 
 ```bash
 # Plugin install (recommended for Claude)
-/plugin marketplace add Slalom/magellan-claude
-/plugin install magellan@slalom-plugins
+/plugin marketplace add apardawala/ai-navigator
+/plugin install magellan@apardawala
 
 # Manual install (Claude Code)
-git clone https://github.com/Slalom/magellan-claude.git && cd magellan-claude && ./install.sh
+git clone https://github.com/apardawala/ai-navigator.git && cd ai-navigator/magellan && ./install.sh
 
 # Install for Gemini / AntiGravity
-git clone https://github.com/Slalom/magellan-claude.git && cd magellan-claude && ./install-gemini.sh
+git clone https://github.com/apardawala/ai-navigator.git && cd ai-navigator/magellan && ./install-gemini.sh
 
 # Install for Kiro IDE
-git clone https://github.com/Slalom/magellan-claude.git && cd magellan-claude && ./install-kiro.sh
+git clone https://github.com/apardawala/ai-navigator.git && cd ai-navigator/magellan && ./install-kiro.sh
 ```
 
 ```text
@@ -158,15 +158,15 @@ extraction precision. Add your own for proprietary languages.
 From within Claude Code:
 
 ```bash
-/plugin marketplace add Slalom/magellan-claude
-/plugin install magellan@slalom-plugins
+/plugin marketplace add apardawala/ai-navigator
+/plugin install magellan@apardawala
 ```
 
 ### Manual install (Claude Code)
 
 ```bash
-git clone https://github.com/Slalom/magellan-claude.git
-cd magellan-claude
+git clone https://github.com/apardawala/ai-navigator.git
+cd ai-navigator/magellan
 ./install.sh
 ```
 
@@ -181,8 +181,8 @@ Both methods require only Claude Code. Restart Claude Code after installing.
 ### Gemini / AntiGravity Install
 
 ```bash
-git clone https://github.com/Slalom/magellan-claude.git
-cd magellan-claude
+git clone https://github.com/apardawala/ai-navigator.git
+cd ai-navigator/magellan
 chmod +x install-gemini.sh
 ./install-gemini.sh
 ```
@@ -192,8 +192,8 @@ This script copies workflows and skills into `.agent/workflows/` and `.agent/ski
 ### Kiro IDE Install
 
 ```bash
-git clone https://github.com/Slalom/magellan-claude.git
-cd magellan-claude
+git clone https://github.com/apardawala/ai-navigator.git
+cd ai-navigator/magellan
 chmod +x install-kiro.sh
 ./install-kiro.sh
 ```

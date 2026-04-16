@@ -148,7 +148,7 @@ Source: "CBBLKBOOK.cblle", lines 142-198
 
 ### Example 3: From a meeting transcript
 
-Source: "ASI Demo for Slalom.vtt", timestamp 00:12:34
+Source: "ASI Demo for Client.vtt", timestamp 00:12:34
 
 > "we actually moved the entire auction access module to AWS about two years ago
 > but the core billing still runs on the AS/400"
@@ -162,7 +162,7 @@ Source: "ASI Demo for Slalom.vtt", timestamp 00:12:34
   "predicate": "runs on platform",
   "object": "AWS (migrated ~2 years ago), while core billing remains on AS/400",
   "source": {
-    "document": "Meetings/ASI Demo for Slalom.vtt",
+    "document": "Meetings/ASI Demo for Client.vtt",
     "location": "timestamp 00:12:34",
     "quote": "we actually moved the entire auction access module to AWS about two years ago but the core billing still runs on the AS/400"
   },

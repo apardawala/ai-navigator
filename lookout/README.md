@@ -73,7 +73,7 @@ These appear in your next `/lookout` run alongside official changes.
 ### From the repo
 
 ```bash
-git clone https://github.com/Slalom/lookout.git
+git clone https://github.com/apardawala/ai-navigator.git
 cd lookout && ./install.sh
 ```
 
