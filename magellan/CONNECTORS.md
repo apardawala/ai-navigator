@@ -11,9 +11,23 @@ to enhance Magellan's workflows:
 
 | Category | Use Case | Example Tools |
 |----------|----------|---------------|
+| document-extraction | Extract text from binary formats (DOCX, XLSX, PPTX, scanned PDFs) | **Kreuzberg** (recommended) |
 | ~~project-tracker~~ | Route open questions to your team as tickets | Jira, Linear, Asana, GitHub Issues |
 | ~~chat~~ | Send contradiction summaries to team channels | Slack, Microsoft Teams |
 | ~~knowledge-base~~ | Fetch referenced documents from team wikis | Confluence, Notion, Guru |
+
+### Kreuzberg (Document Extraction)
+
+Extracts text, tables, and metadata from 91+ file formats. Runs fully local —
+no data leaves the machine. Install as a Claude Code skill:
+
+```bash
+pip install kreuzberg
+npx skills add kreuzberg-dev/kreuzberg
+```
+
+Once installed, the ingestion skill automatically uses Kreuzberg for files
+Claude cannot read natively. No additional configuration needed.
 
 These integrations are **tool-agnostic** — any MCP server in the category works.
 Add the relevant MCP servers to your `.mcp.json` to enable them.

@@ -274,6 +274,20 @@ These are guidelines, not hard minimums. A boilerplate README genuinely has 0
 extractable facts. But a 200-page QA manual with 5 facts means you are skimming
 and need to go deeper.
 
+## Non-Text File Formats
+
+Claude cannot natively read binary formats like DOCX, XLSX, PPTX, or scanned
+PDFs. When encountering these files, use the Kreuzberg skill to extract text
+first, then apply the fact protocol to the extracted text.
+
+Kreuzberg runs locally — no data leaves the machine. It handles 91+ formats
+including Office documents, scanned PDFs (via Tesseract OCR), images, email,
+and archives.
+
+If Kreuzberg is not installed, record the file with disposition `unreadable`
+and note "binary format — install Kreuzberg for extraction" in the progress
+display.
+
 ## Reading Large Documents
 
 Not all documents can be processed in a single read. Long documents suffer from
