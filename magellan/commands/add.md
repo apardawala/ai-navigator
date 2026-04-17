@@ -27,7 +27,11 @@ Verify `.magellan/` exists. If not, initialize the workspace:
 
 When a file path is provided:
 
-1. Read the file with the Read tool.
+1. Extract the file to silver. Determine the silver path:
+   `.magellan/silver/<relative_path>.txt`. Create parent directories as needed.
+   Run `kreuzberg extract <path>` via Bash and write the output to the silver
+   path. If kreuzberg is not installed, fall back to the Read tool. All
+   subsequent reads use the silver file, not the original.
 2. If it's a code file, check `.magellan/language_guides/` for a matching language
    guide. Read the guide for context before extracting facts.
 3. Verify the target domain is registered in `.magellan/domains.json`. If not,

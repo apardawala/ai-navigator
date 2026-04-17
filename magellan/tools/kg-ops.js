@@ -11,8 +11,8 @@ const { execSync } = require('child_process');
 // ---------------------------------------------------------------------------
 
 const DISPOSITIONS = [
-  'ingested', 'no_facts', 'unreadable', 'extraction_error',
-  'skipped_unchanged', 'skipped_by_rule'
+  'extracted', 'ingested', 'cataloged', 'no_facts', 'no_text', 'unreadable',
+  'extraction_error', 'skipped_unchanged', 'skipped_by_rule'
 ];
 
 const ENTITY_TYPES = [
@@ -411,7 +411,29 @@ function cmd_update_state(args) {
   const stateFile = path.join(mg, 'state.json');
   const state = read_json(stateFile) || {};
 
-  if (args.step) state.pipeline_step = parseInt(args.step, 10);
+  if (args.step) {
+    const newStep = parseInt(args.step, 10);
+    const currentStep = state.pipeline_step || 0;
+
+    // Enforce: can only advance one step at a time (unless --force)
+    if (!args.force && newStep > currentStep + 1) {
+      process.stderr.write(`ERROR: Cannot jump from step ${currentStep} to step ${newStep}. Steps must advance sequentially. Use --force to override.\n`);
+      process.exit(1);
+    }
+
+    // Enforce: quality gate must be logged for previous step before advancing
+    if (!args.force && newStep > 1 && currentStep > 0) {
+      const feedbackFile = path.join(mg, 'pipeline_feedback.json');
+      const feedback = read_json(feedbackFile) || { steps: [] };
+      const prevGate = feedback.steps.find(s => s.step === currentStep && s.type === 'quality_gate');
+      if (!prevGate) {
+        process.stderr.write(`ERROR: No quality gate recorded for step ${currentStep}. Run quality-gate --step ${currentStep} before advancing. Use --force to override.\n`);
+        process.exit(1);
+      }
+    }
+
+    state.pipeline_step = newStep;
+  }
   if (args.notes) state.session_notes = args.notes;
   if (args['clear-step']) delete state.pipeline_step;
 
@@ -433,6 +455,30 @@ function cmd_update_processed(args) {
   const disposition = require_arg(args, 'disposition');
   validate_enum(disposition, DISPOSITIONS, 'disposition');
 
+  // Enforce: 'ingested' requires at least one fact referencing this file
+  if (disposition === 'ingested') {
+    const domainsDir = path.join(mg, 'domains');
+    let factFound = false;
+    if (fs.existsSync(domainsDir)) {
+      for (const domain of fs.readdirSync(domainsDir)) {
+        const factsDir = path.join(domainsDir, domain, 'facts');
+        if (!fs.existsSync(factsDir)) continue;
+        for (const f of fs.readdirSync(factsDir).filter(f => f.endsWith('.json'))) {
+          const factData = read_json(path.join(factsDir, f));
+          if (factData && factData.source_document === file) {
+            factFound = true;
+            break;
+          }
+        }
+        if (factFound) break;
+      }
+    }
+    if (!factFound) {
+      process.stderr.write(`ERROR: Cannot mark "${file}" as ingested — no facts reference this file. Use 'cataloged' for files scanned but not deeply extracted.\n`);
+      process.exit(1);
+    }
+  }
+
   const domain = args.domain || null;
   const factCount = args['fact-count'] ? parseInt(args['fact-count'], 10) : 0;
   const hash = args.hash || null;
@@ -453,6 +499,144 @@ function cmd_update_processed(args) {
   data.files[file] = entry;
   write_json(pfFile, data);
   console.log(`Updated processed_files.json: ${file} → ${disposition}`);
+}
+
+function cmd_quality_gate(args) {
+  const { mg } = resolve_mg(args);
+  const step = parseInt(require_arg(args, 'step'), 10);
+
+  const blockers = [];
+  const warnings = [];
+
+  const domains = fs.existsSync(path.join(mg, 'domains')) ? get_domains(mg) : [];
+  const pfFile = path.join(mg, 'processed_files.json');
+  const pfData = read_json(pfFile) || { files: {} };
+
+  // Step-specific checks
+  if (step === 1) {
+    // Must have domains registered and files discovered
+    const domainsFile = read_json(path.join(mg, 'domains.json'));
+    if (!domainsFile || !domainsFile.domains || domainsFile.domains.length === 0) {
+      blockers.push('No domains registered');
+    }
+    const fileCount = Object.keys(pfData.files || {}).length;
+    if (fileCount === 0) warnings.push('No files tracked in processed_files.json');
+  }
+
+  if (step === 2) {
+    // Must have facts extracted, all files accounted for
+    let totalFacts = 0;
+    let filesWithFacts = new Set();
+    for (const domain of domains) {
+      const factsDir = path.join(mg, 'domains', domain, 'facts');
+      if (!fs.existsSync(factsDir)) continue;
+      for (const f of fs.readdirSync(factsDir).filter(f => f.endsWith('.json'))) {
+        const factData = read_json(path.join(factsDir, f));
+        if (factData && factData.facts) {
+          totalFacts += factData.facts.length;
+          filesWithFacts.add(factData.source_document);
+        }
+      }
+    }
+    if (totalFacts === 0) blockers.push('No facts extracted from any file');
+    if (totalFacts < 10) warnings.push(`Only ${totalFacts} facts extracted — expected more for a meaningful KG`);
+
+    // Check for files marked ingested without facts
+    const ingestedNoFacts = [];
+    for (const [file, entry] of Object.entries(pfData.files || {})) {
+      if (entry.disposition === 'ingested' && !filesWithFacts.has(file)) {
+        ingestedNoFacts.push(file);
+      }
+    }
+    if (ingestedNoFacts.length > 0) {
+      blockers.push(`${ingestedNoFacts.length} files marked 'ingested' but have no facts: ${ingestedNoFacts.slice(0, 3).join(', ')}${ingestedNoFacts.length > 3 ? '...' : ''}`);
+    }
+  }
+
+  if (step === 3) {
+    // Must have entities created
+    let entityCount = 0;
+    for (const domain of domains) {
+      const entDir = path.join(mg, 'domains', domain, 'entities');
+      if (!fs.existsSync(entDir)) continue;
+      entityCount += fs.readdirSync(entDir).filter(f => f.endsWith('.json')).length;
+    }
+    if (entityCount === 0) blockers.push('No entities created');
+
+    // Entities should have summaries >= 50 chars
+    let shortSummaries = 0;
+    for (const domain of domains) {
+      const entDir = path.join(mg, 'domains', domain, 'entities');
+      if (!fs.existsSync(entDir)) continue;
+      for (const f of fs.readdirSync(entDir).filter(f => f.endsWith('.json'))) {
+        const ent = read_json(path.join(entDir, f));
+        if (ent && ent.summary && ent.summary.length < 50) shortSummaries++;
+      }
+    }
+    if (shortSummaries > 0) warnings.push(`${shortSummaries} entities have summaries under 50 chars`);
+  }
+
+  if (step >= 4) {
+    // Should have relationships
+    let edgeCount = 0;
+    for (const domain of domains) {
+      const relFile = path.join(mg, 'domains', domain, 'relationships.json');
+      const relData = read_json(relFile);
+      if (relData && relData.edges) edgeCount += relData.edges.length;
+    }
+    const crossFile = path.join(mg, 'cross_domain.json');
+    const crossData = read_json(crossFile);
+    if (crossData && crossData.edges) edgeCount += crossData.edges.length;
+    if (edgeCount === 0 && domains.length >= 2) warnings.push('No relationships found despite multiple domains');
+  }
+
+  if (step >= 6) {
+    // Should have domain summaries
+    let missingSummaries = [];
+    for (const domain of domains) {
+      const summaryFile = path.join(mg, 'domains', domain, 'summary.json');
+      if (!fs.existsSync(summaryFile)) missingSummaries.push(domain);
+    }
+    if (missingSummaries.length > 0) blockers.push(`Missing domain summaries: ${missingSummaries.join(', ')}`);
+  }
+
+  if (step >= 7) {
+    // Must have onboarding guide
+    if (!fs.existsSync(path.join(mg, 'onboarding_guide.md'))) {
+      blockers.push('onboarding_guide.md not found');
+    }
+  }
+
+  // Write to pipeline_feedback.json
+  const feedbackFile = path.join(mg, 'pipeline_feedback.json');
+  const feedback = read_json(feedbackFile) || { steps: [] };
+  const entry = {
+    step,
+    type: 'quality_gate',
+    result: blockers.length > 0 ? 'fail' : 'pass',
+    blockers,
+    warnings,
+    started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString()
+  };
+  feedback.steps.push(entry);
+  write_json(feedbackFile, feedback);
+
+  // Display
+  console.log(`Quality Gate — Step ${step}: ${entry.result.toUpperCase()}`);
+  if (blockers.length > 0) {
+    console.log(`  BLOCKERS (${blockers.length}):`);
+    for (const b of blockers) console.log(`    ✗ ${b}`);
+  }
+  if (warnings.length > 0) {
+    console.log(`  WARNINGS (${warnings.length}):`);
+    for (const w of warnings) console.log(`    ⚠ ${w}`);
+  }
+  if (blockers.length === 0 && warnings.length === 0) {
+    console.log('  All checks passed.');
+  }
+
+  if (blockers.length > 0) process.exit(1);
 }
 
 function cmd_rebuild_index(args) {
@@ -517,7 +701,7 @@ function cmd_hash_check(args) {
   const allFiles = [];
   function walk(dir, rel) {
     for (const entry of fs.readdirSync(dir)) {
-      if (entry === '.magellan' || entry === '.git' || entry === 'node_modules') continue;
+      if (entry.startsWith('.') || entry === 'node_modules') continue;
       const full = path.join(dir, entry);
       const relPath = rel ? `${rel}/${entry}` : entry;
       if (fs.statSync(full).isDirectory()) {
@@ -567,7 +751,7 @@ function cmd_verify_ledger(args) {
   const allFiles = [];
   function walk(dir, rel) {
     for (const entry of fs.readdirSync(dir)) {
-      if (entry === '.magellan' || entry === '.git' || entry === 'node_modules') continue;
+      if (entry.startsWith('.') || entry === 'node_modules') continue;
       const full = path.join(dir, entry);
       const relPath = rel ? `${rel}/${entry}` : entry;
       if (fs.statSync(full).isDirectory()) {
@@ -964,6 +1148,308 @@ function cmd_hub_scores(args) {
 }
 
 // ---------------------------------------------------------------------------
+// Audit Trail
+// ---------------------------------------------------------------------------
+
+const AUDIT_ACTIONS = [
+  'file_discovered', 'file_extracted', 'file_ingested', 'file_excluded',
+  'fact_extracted', 'entity_created', 'entity_updated', 'entity_merged',
+  'edge_created', 'edge_removed',
+  'contradiction_detected', 'contradiction_resolved',
+  'question_raised', 'question_answered',
+  'domain_registered', 'domain_summarized',
+  'pipeline_step_started', 'pipeline_step_completed', 'quality_gate_run',
+  'output_generated', 'correction_applied'
+];
+
+function get_session_id() {
+  return process.env.CLAUDE_SESSION_ID || process.env.SESSION_ID || 'unknown';
+}
+
+function get_model_id() {
+  return process.env.CLAUDE_MODEL || process.env.MODEL_ID || 'unknown';
+}
+
+function cmd_audit_log(args) {
+  const { mg } = resolve_mg(args);
+  const action = require_arg(args, 'action');
+  validate_enum(action, AUDIT_ACTIONS, 'audit action');
+
+  const detail = require_arg(args, 'detail');
+  const inputRef = args['input'] || null;
+  const outputRef = args['output'] || null;
+  const rationale = args['rationale'] || null;
+
+  const auditDir = path.join(mg, 'audit');
+  if (!fs.existsSync(auditDir)) fs.mkdirSync(auditDir, { recursive: true });
+
+  const logFile = path.join(auditDir, 'session_log.jsonl');
+  const entry = {
+    timestamp: new Date().toISOString(),
+    session_id: get_session_id(),
+    model_id: get_model_id(),
+    user: get_git_user(),
+    action,
+    detail,
+    input: inputRef,
+    output: outputRef,
+    rationale
+  };
+
+  fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', 'utf8');
+  console.log(`Audit: ${action} | ${detail}`);
+}
+
+function cmd_audit_manifest(args) {
+  const { mg } = resolve_mg(args);
+  const file = require_arg(args, 'file');
+  const stage = require_arg(args, 'stage');
+  validate_enum(stage, ['discovered', 'extracted', 'ingested', 'excluded', 'entity_linked'], 'stage');
+
+  const auditDir = path.join(mg, 'audit');
+  if (!fs.existsSync(auditDir)) fs.mkdirSync(auditDir, { recursive: true });
+
+  const manifestFile = path.join(auditDir, 'processing_manifest.json');
+  const manifest = read_json(manifestFile) || { files: {} };
+
+  if (!manifest.files[file]) {
+    manifest.files[file] = {
+      bronze_path: file,
+      silver_path: null,
+      discovered_at: null,
+      extracted_at: null,
+      extraction_tool: null,
+      extraction_tool_version: null,
+      silver_line_count: null,
+      ingested_at: null,
+      model_used: null,
+      session_id: null,
+      facts_produced: [],
+      entities_contributed_to: [],
+      excluded: false,
+      exclusion_reason: null
+    };
+  }
+
+  const entry = manifest.files[file];
+  const now = new Date().toISOString();
+
+  if (stage === 'discovered') {
+    entry.discovered_at = now;
+    if (args['hash']) entry.content_hash = args['hash'];
+  }
+
+  if (stage === 'extracted') {
+    entry.extracted_at = now;
+    entry.silver_path = args['silver-path'] || null;
+    entry.extraction_tool = args['tool'] || 'kreuzberg';
+    entry.extraction_tool_version = args['tool-version'] || null;
+    if (args['line-count']) entry.silver_line_count = parseInt(args['line-count'], 10);
+  }
+
+  if (stage === 'ingested') {
+    entry.ingested_at = now;
+    entry.model_used = get_model_id();
+    entry.session_id = get_session_id();
+    if (args['facts']) {
+      const newFacts = args['facts'].split(',').map(f => f.trim());
+      entry.facts_produced = [...new Set([...entry.facts_produced, ...newFacts])];
+    }
+  }
+
+  if (stage === 'entity_linked') {
+    if (args['entities']) {
+      const newEntities = args['entities'].split(',').map(e => e.trim());
+      entry.entities_contributed_to = [...new Set([...entry.entities_contributed_to, ...newEntities])];
+    }
+  }
+
+  if (stage === 'excluded') {
+    entry.excluded = true;
+    entry.exclusion_reason = args['reason'] || 'no reason provided';
+  }
+
+  write_json(manifestFile, manifest);
+  console.log(`Manifest: ${file} → ${stage}`);
+}
+
+function cmd_audit_methodology(args) {
+  const { mg } = resolve_mg(args);
+
+  const auditDir = path.join(mg, 'audit');
+  if (!fs.existsSync(auditDir)) fs.mkdirSync(auditDir, { recursive: true });
+
+  const state = read_json(path.join(mg, 'state.json')) || {};
+  const index = read_json(path.join(mg, 'index.json')) || {};
+  const domains = fs.existsSync(path.join(mg, 'domains')) ? get_domains(mg) : [];
+  const pfData = read_json(path.join(mg, 'processed_files.json')) || { files: {} };
+  const manifest = read_json(path.join(auditDir, 'processing_manifest.json')) || { files: {} };
+
+  // Count dispositions
+  const dispCounts = {};
+  for (const [, entry] of Object.entries(pfData.files || {})) {
+    dispCounts[entry.disposition] = (dispCounts[entry.disposition] || 0) + 1;
+  }
+
+  // Count facts and entities
+  let totalFacts = 0;
+  let totalEntities = 0;
+  for (const domain of domains) {
+    const factsDir = path.join(mg, 'domains', domain, 'facts');
+    if (fs.existsSync(factsDir)) {
+      for (const f of fs.readdirSync(factsDir).filter(f => f.endsWith('.json'))) {
+        const data = read_json(path.join(factsDir, f));
+        if (data && data.facts) totalFacts += data.facts.length;
+      }
+    }
+    const entDir = path.join(mg, 'domains', domain, 'entities');
+    if (fs.existsSync(entDir)) {
+      totalEntities += fs.readdirSync(entDir).filter(f => f.endsWith('.json')).length;
+    }
+  }
+
+  // Get kreuzberg version
+  let kreuzbergVersion = 'unknown';
+  try {
+    kreuzbergVersion = execSync('kreuzberg version 2>/dev/null || echo unknown', { encoding: 'utf8' }).trim();
+  } catch (_) {}
+
+  // Get session log entry count
+  const logFile = path.join(auditDir, 'session_log.jsonl');
+  let auditEntryCount = 0;
+  if (fs.existsSync(logFile)) {
+    auditEntryCount = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(l => l).length;
+  }
+
+  const methodology = `# Processing Methodology
+
+> Auto-generated audit document. Describes how source materials were processed
+> into the knowledge graph. Intended for independent audit and FOIA compliance.
+
+## Overview
+
+This knowledge graph was built from ${Object.keys(pfData.files || {}).length} source
+documents using the Magellan knowledge management pipeline. The pipeline
+extracts text from source documents, identifies atomic facts with source
+citations, and builds a structured knowledge graph of entities and relationships.
+
+## Processing Pipeline
+
+### Stage 1: Document Discovery
+Source documents were discovered in the workspace directory. Each file was
+assigned a SHA-256 content hash for change detection. Files were categorized
+by type and assigned to business domains for targeted analysis.
+
+### Stage 2a: Text Extraction (Bronze to Silver)
+Each source document was processed through kreuzberg (version: ${kreuzbergVersion}),
+a local document intelligence tool that extracts text from 91+ file formats
+including PDF, DOCX, XLSX, and scanned documents via OCR. No data was sent
+to external services during extraction — all processing occurred locally.
+
+Extracted text was saved to the silver layer (\`.magellan/silver/\`) as plain
+text files, creating a durable intermediate representation that preserves
+the full content of each source document in a machine-readable format.
+
+### Stage 2b: Fact Extraction (Silver to Gold)
+An AI model read each silver text file and extracted atomic facts — single,
+self-contained factual statements. Each fact includes:
+- A natural language statement summarizing the fact
+- The source document path
+- The exact location within the document (page, section)
+- A verbatim quote from the source (max 500 characters)
+- A confidence score (0.0 to 1.0)
+- Domain classification
+
+Facts were written to the gold layer (\`.magellan/domains/<domain>/facts/\`).
+
+### Stage 3: Knowledge Graph Construction
+Facts were grouped into entities — business processes, rules, constraints,
+and data concepts. Each entity includes:
+- A summary description
+- Evidence array linking back to source facts with quotes
+- Confidence and weight scores
+- Relationships to other entities
+
+### Quality Controls
+- Every fact traces to a verbatim source quote
+- Quote verification checks that quotes exist in the source documents
+- File ledger reconciliation ensures every file reaches a recorded disposition
+- Quality gates run after each pipeline step with automated checks
+- State transitions are enforced sequentially — steps cannot be skipped
+
+## Tools Used
+
+| Tool | Purpose | Version |
+|------|---------|---------|
+| Magellan | Knowledge graph pipeline | See git history |
+| kreuzberg | Document text extraction | ${kreuzbergVersion} |
+| kg-write.js | Schema-validated KG writes | See git history |
+| kg-ops.js | Pipeline operations and verification | See git history |
+| kg-query.js | Graph traversal and querying | See git history |
+
+## Processing Statistics
+
+| Metric | Value |
+|--------|-------|
+| Total files discovered | ${Object.keys(pfData.files || {}).length} |
+| Files with facts extracted (ingested) | ${dispCounts['ingested'] || 0} |
+| Files cataloged (scanned, not deeply extracted) | ${dispCounts['cataloged'] || 0} |
+| Files with no extractable facts | ${dispCounts['no_facts'] || 0} |
+| Files excluded by rule | ${dispCounts['skipped_by_rule'] || 0} |
+| Unreadable files | ${dispCounts['unreadable'] || 0} |
+| Total atomic facts extracted | ${totalFacts} |
+| Total entities in knowledge graph | ${totalEntities} |
+| Business domains | ${domains.length} (${domains.join(', ')}) |
+| Audit log entries | ${auditEntryCount} |
+
+## Disposition Definitions
+
+| Disposition | Meaning |
+|-------------|---------|
+| extracted | Text extracted to silver layer, not yet analyzed for facts |
+| ingested | Facts extracted and written to the knowledge graph |
+| cataloged | File identified and scanned but not deeply analyzed for facts |
+| no_facts | File read but contained no extractable domain facts |
+| no_text | kreuzberg could not extract text from the file |
+| unreadable | File could not be opened or processed |
+| skipped_by_rule | File excluded from processing (e.g., build artifacts, configs) |
+| skipped_unchanged | Content hash matches previous run, no reprocessing needed |
+
+## Provenance
+
+Every entity in the knowledge graph can be traced back to source documents
+through the following chain:
+
+\`\`\`
+Entity (gold) → Evidence array → Fact (gold) → Source quote + location →
+Silver extract (.magellan/silver/) → Bronze source document (workspace)
+\`\`\`
+
+The processing manifest (\`.magellan/audit/processing_manifest.json\`) provides
+a per-file record of this chain including timestamps, tool versions, and
+session identifiers.
+
+The session log (\`.magellan/audit/session_log.jsonl\`) provides a chronological
+record of every processing action taken, including the model and session that
+performed each action.
+
+## Data Handling
+
+- All source documents remain in the workspace (bronze layer) unmodified
+- Text extracts are stored locally in \`.magellan/silver/\`
+- No source data was transmitted to external services during text extraction
+- AI model processing occurred via API calls; source text was sent to the
+  model provider for fact extraction and entity building
+- The knowledge graph (\`.magellan/domains/\`) contains only extracted facts,
+  entities, and relationships — not raw source content
+`;
+
+  const methodFile = path.join(auditDir, 'methodology.md');
+  fs.writeFileSync(methodFile, methodology, 'utf8');
+  console.log(`Generated methodology.md (${Object.keys(pfData.files || {}).length} files, ${totalFacts} facts, ${totalEntities} entities)`);
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -971,6 +1457,7 @@ const COMMANDS = {
   'log': cmd_log,
   'summary': cmd_summary,
   'graph': cmd_graph,
+  'quality-gate': cmd_quality_gate,
   'update-state': cmd_update_state,
   'update-processed': cmd_update_processed,
   'remove-processed': cmd_remove_processed,
@@ -981,7 +1468,10 @@ const COMMANDS = {
   'verify-edges': cmd_verify_edges,
   'verify-coverage': cmd_verify_coverage,
   'detect-cross-contradictions': cmd_detect_cross_contradictions,
-  'hub-scores': cmd_hub_scores
+  'hub-scores': cmd_hub_scores,
+  'audit-log': cmd_audit_log,
+  'audit-manifest': cmd_audit_manifest,
+  'audit-methodology': cmd_audit_methodology
 };
 
 const { command, args } = parseArgs(process.argv.slice(2));
@@ -1004,10 +1494,18 @@ Visualization:
                      explorer. Opens in browser. Nodes colored by domain, search,
                      click for details.
 
+Quality:
+  quality-gate       Run verification checks for a pipeline step (--step N)
+                     Writes result to pipeline_feedback.json. Blocks on failures.
+                     Must pass before update-state can advance to next step.
+
 State Management:
   update-state       Update state.json (--step N, --notes "...", --set-last-run)
+                     Enforces sequential advancement. Use --force to override.
   update-processed   Update processed_files.json entry
                      --file <path> --disposition <enum> [--domain, --fact-count, --hash, --error]
+                     'ingested' requires facts to exist for the file. Use 'cataloged' for
+                     files scanned but not deeply extracted.
   remove-processed   Remove a stale entry from processed_files.json
                      --file <path>
   rebuild-index      Rebuild index.json from domain files
@@ -1028,12 +1526,29 @@ Verification:
 Computation:
   hub-scores         Calculate hub scores for a domain (--domain <name>)
 
+Audit Trail:
+  audit-log          Append structured entry to audit/session_log.jsonl
+                     --action <audit_action> --detail "description"
+                     [--input <ref>] [--output <ref>] [--rationale "why"]
+                     Actions: ${AUDIT_ACTIONS.join(', ')}
+  audit-manifest     Update per-file provenance in audit/processing_manifest.json
+                     --file <path> --stage <discovered|extracted|ingested|excluded|entity_linked>
+                     Stages accept additional args:
+                       discovered: [--hash]
+                       extracted: [--silver-path, --tool, --tool-version, --line-count]
+                       ingested: [--facts <comma-separated>]
+                       entity_linked: [--entities <comma-separated>]
+                       excluded: [--reason]
+  audit-methodology  Generate audit/methodology.md — full process documentation
+                     for independent audit and FOIA compliance
+
 Enums:
   dispositions: ${DISPOSITIONS.join(', ')}
   entity types: ${ENTITY_TYPES.join(', ')}
   edge types:   ${EDGE_TYPES.join(', ')}
   severity:     ${SEVERITY_LEVELS.join(', ')}
-  priority:     ${PRIORITY_LEVELS.join(', ')}`);
+  priority:     ${PRIORITY_LEVELS.join(', ')}
+  audit actions: ${AUDIT_ACTIONS.join(', ')}`);
   process.exit(0);
 }
 

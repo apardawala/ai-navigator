@@ -61,10 +61,40 @@ pipeline (Phase 1 Discovery + Phase 2 Design).
    The tool detects the git user automatically. See file-conventions for the
    full list of log actions.
 
-## First Step — Load Principles
+7. **Audit trail for every processing action.** In addition to the activity log,
+   record structured audit entries using `kg-ops.js` audit commands:
+   - `audit-log` for every significant action (file discovered, extracted,
+     ingested, fact extracted, entity created, etc.) with input/output refs
+     and rationale. This produces `.magellan/audit/session_log.jsonl`.
+   - `audit-manifest` for every file at each processing stage (discovered,
+     extracted, ingested, entity_linked, excluded) with tool versions and
+     timestamps. This produces `.magellan/audit/processing_manifest.json`.
+   - `audit-methodology` at the end of each pipeline run to generate
+     `.magellan/audit/methodology.md` — a complete process description for
+     independent audit and FOIA compliance.
+   The audit trail is mandatory. Government clients require full traceability
+   from any output back to source documents.
 
-Before any processing, read `skills/_principles.md`. These principles govern
-how Magellan evaluates output quality and makes decisions throughout the pipeline.
+## First Step — Inject Principles into CLAUDE.md
+
+Before any processing:
+
+1. Read `skills/_principles.md` to load the principles into context.
+2. Check if a `CLAUDE.md` file exists in the workspace root.
+   - **If no CLAUDE.md exists:** Write the contents of `_principles.md` into a
+     new `CLAUDE.md` under a `# Magellan` section. Display:
+     "Created CLAUDE.md with Magellan principles. Please restart the session
+     so principles are loaded into the system prompt." Stop the pipeline.
+   - **If CLAUDE.md exists but has no `# Magellan` section:** Append the
+     contents of `_principles.md` under a `# Magellan` section at the end of
+     the file. Display: "Added Magellan principles to CLAUDE.md. Please restart
+     the session so principles are loaded into the system prompt." Stop the
+     pipeline.
+   - **If CLAUDE.md exists with a `# Magellan` section:** Principles are
+     already injected. Continue to the next step.
+
+This ensures Magellan principles are always in the system prompt via CLAUDE.md,
+not just loaded as a skill that decays over conversation length.
 
 ## Behavior
 
@@ -162,8 +192,11 @@ No Magellan workspace found.
 
 1. Create directory structure via Bash:
    ```
-   mkdir -p .magellan/domains .magellan/diagrams .magellan/language_guides
+   mkdir -p .magellan/domains .magellan/diagrams .magellan/language_guides .magellan/silver
    ```
+   The `.magellan/silver/` directory stores kreuzberg text extracts (the silver
+   layer). Source files in the workspace are bronze. The KG in `domains/` is gold.
+   Magellan never reads bronze files directly during analysis — only silver.
 2. Write `.magellan/state.json`: `{"initialized_at": "<ISO timestamp>"}`
 3. Copy starter language guides from `skills/ingestion/language_guides/` to
    `.magellan/language_guides/` (skip existing — user may have customized).
@@ -230,12 +263,47 @@ for each. After this, the domain set is locked — extraction must use registere
 
 **Quality Gate.** Update state.json.
 
-### Step 2: Extract Facts (Stage 1)
+### Step 2a: Extract Text — Bronze to Silver
+
+This step extracts text from all source files (bronze) into `.magellan/silver/`
+using kreuzberg. After this step, Magellan never reads bronze files again.
 
 For each file in the processing list:
 
-1. **Check file size** via Bash (`wc -l` for text, `wc -c` for binary).
-2. **Read** the file following the ingestion skill's reading strategy:
+1. Determine the silver path: `.magellan/silver/<relative_path>.txt`
+   (e.g., `docs/manual.pdf` → `.magellan/silver/docs/manual.pdf.txt`).
+   Create parent directories as needed.
+2. Run `kreuzberg extract <bronze_path>` via Bash and write the output to the
+   silver path. If kreuzberg fails, fall back to the Read tool and write the
+   content to silver. If both fail, record disposition as `unreadable`.
+3. Record the extraction in `.magellan/processed_files.json` with disposition
+   `extracted` and the content hash from Step 1.
+4. Display: "Extracted [N/total]: filename (M lines → silver)"
+
+After all files, display:
+
+```
+Bronze → Silver Extraction
+============================
+Total files:   52
+  extracted:   47
+  no_text:      3
+  unreadable:   2
+  ---
+  Accounted:   52/52
+```
+
+**Quality Gate.** Run `node ~/.claude/tools/magellan/kg-ops.js quality-gate --step 2`.
+Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 2 --notes "..."`.
+
+### Step 2b: Extract Facts — Silver to Gold
+
+Read from `.magellan/silver/` only. Never read bronze files in this step.
+
+For each extracted file in silver:
+
+1. **Check file size** via Bash (`wc -l`).
+2. **Read** the silver file following the ingestion skill's reading strategy:
    - Small files (under ~5,000 lines): read entire file in one pass.
    - Large files (over ~5,000 lines): read in sections using `offset` and `limit`.
      See the "Reading Large Documents" section in the ingestion skill.
@@ -245,8 +313,10 @@ For each file in the processing list:
 4. **Write each fact** using `~/.claude/tools/magellan/kg-write.js add-fact` with the appropriate
    arguments (--workspace, --domain, --statement, --subject, etc.). The tool
    handles JSON serialization, schema validation, and fact_count updates.
-5. **Record disposition** in `.magellan/processed_files.json` (read, update, write back).
-   Include the `content_hash` from Step 1's hash computation.
+   The `--source-doc` should reference the original bronze path, not the silver path.
+5. **Update disposition** in `.magellan/processed_files.json` from `extracted` to
+   `ingested` (if facts were produced) or `no_facts`. The tool enforces that
+   `ingested` requires facts to exist.
 6. Display: "Ingested [N/total]: filename (M facts → domain)"
 
 **Track affected domains** as you process files.
@@ -258,20 +328,20 @@ the existing facts from the previous version. If a fact's statement changed
 `~/.claude/tools/magellan/kg-write.js add-contradiction`. This catches silent changes in source
 documents that would otherwise go unnoticed.
 
-If a file cannot be read or produces no facts, record the disposition and continue.
-**Nothing is silently skipped.**
+If a file produces no facts, record the disposition as `no_facts` or `cataloged`
+and continue. **Nothing is silently skipped.**
 
 After all files, display:
 
 ```
-File Processing Summary
-=======================
-Total files:   52
-  ingested:    47
+Silver → Gold Fact Extraction
+===============================
+Total files:   47
+  ingested:    40
+  cataloged:    4
   no_facts:     3
-  unreadable:   2
   ---
-  Accounted:   52/52
+  Accounted:   47/47
 ```
 
 **Verify — File Ledger Reconciliation:**
@@ -280,9 +350,11 @@ the missing files are listed — this is a **blocker**. Process them before cont
 
 **Verify — Quote Verification:**
 Run `node ~/.claude/tools/magellan/kg-ops.js verify-quotes --workspace <path>`. If any quotes fail,
-fix or remove the hallucinated facts before continuing.
+fix or remove the hallucinated facts before continuing. Quote verification checks
+against silver files, not bronze.
 
-**Quality Gate.** Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 2 --notes "..."`.
+**Quality Gate.** Run `node ~/.claude/tools/magellan/kg-ops.js quality-gate --step 3`.
+Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 3 --notes "..."`.
 
 ### Step 3: Build Graph (Stage 2a)
 

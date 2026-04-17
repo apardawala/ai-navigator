@@ -27,7 +27,7 @@ function parseArgs(argv) {
       positional.push(argv[i]);
     }
   }
-  return { command: positional[0], args };
+  return { command: positional[0], positional, args };
 }
 
 function require_arg(args, name) {
@@ -612,6 +612,90 @@ function cmd_validate(args) {
   }
 }
 
+function cmd_batch_entities(args) {
+  const mg = resolve_workspace(args);
+  const stdinData = args._stdin || '';
+  if (!stdinData.trim()) {
+    process.stderr.write('ERROR: batch-entities requires a JSON array via stdin\n');
+    process.exit(1);
+  }
+
+  let entities;
+  try {
+    entities = JSON.parse(stdinData);
+  } catch (e) {
+    process.stderr.write(`ERROR: Invalid JSON on stdin: ${e.message}\n`);
+    process.exit(1);
+  }
+
+  if (!Array.isArray(entities)) {
+    process.stderr.write('ERROR: stdin must be a JSON array of entity objects\n');
+    process.exit(1);
+  }
+
+  let created = 0;
+  let errors = 0;
+
+  for (let i = 0; i < entities.length; i++) {
+    const ent = entities[i];
+    const label = ent.name || `index ${i}`;
+    try {
+      if (!ent.domain) throw new Error('missing domain');
+      if (!ent.name) throw new Error('missing name');
+      if (!ent.type) throw new Error('missing type');
+      if (!ent.summary) throw new Error('missing summary');
+      if (!ent.evidence || !Array.isArray(ent.evidence) || ent.evidence.length === 0) throw new Error('missing or empty evidence array');
+
+      require_domain(mg, ent.domain);
+      validate_enum(ent.type, ENTITY_TYPES, 'entity type');
+
+      if (ent.summary.length < 50) throw new Error(`summary too short (${ent.summary.length} chars, need 50+)`);
+
+      const confidence = validate_confidence(String(ent.confidence || 0.85));
+      const weight = validate_weight(String(ent.weight || 0.85));
+
+      for (const ev of ent.evidence) {
+        if (!ev.source || !ev.location || !ev.quote) throw new Error('evidence entry missing source, location, or quote');
+        validate_quote(ev.quote);
+      }
+
+      const entityId = `${ent.domain}:${snake_case(ent.name)}`;
+      const entitySlug = snake_case(ent.name);
+      const entityFile = path.join(mg, 'domains', ent.domain, 'entities', `${entitySlug}.json`);
+
+      const entity = {
+        entity_id: entityId,
+        name: ent.name,
+        type: ent.type,
+        domain: ent.domain,
+        summary: ent.summary,
+        properties: ent.properties || {},
+        evidence: ent.evidence.map(ev => ({
+          source: ev.source,
+          location: ev.location,
+          quote: ev.quote,
+          confidence: ev.confidence != null ? parseFloat(ev.confidence) : confidence
+        })),
+        tags: ent.tags || [],
+        confidence,
+        weight,
+        version: { current: 'v1', status: 'active' },
+        related_entities: ent.related_entities || [],
+        open_questions: ent.open_questions || []
+      };
+
+      write_json(entityFile, entity);
+      console.log(`  Created ${entityId} (${ent.evidence.length} evidence)`);
+      created++;
+    } catch (e) {
+      process.stderr.write(`  SKIP "${label}": ${e.message}\n`);
+      errors++;
+    }
+  }
+
+  console.log(`Batch complete: ${created} created, ${errors} errors`);
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -620,6 +704,7 @@ const COMMANDS = {
   'add-domain': cmd_add_domain,
   'add-fact': cmd_add_fact,
   'add-entity': cmd_add_entity,
+  'batch-entities': cmd_batch_entities,
   'add-edge': cmd_add_edge,
   'add-contradiction': cmd_add_contradiction,
   'remove-edge': cmd_remove_edge,
@@ -637,21 +722,78 @@ try {
   // No stdin available — that's fine for non-entity commands
 }
 
-const { command, args } = parseArgs(process.argv.slice(2));
+const { command, positional, args } = parseArgs(process.argv.slice(2));
 args._stdin = stdinData;
 
+const COMMAND_HELP = {
+  'add-domain': `add-domain --workspace <path> --domain <name>`,
+  'add-fact': `add-fact --workspace <path> --domain <name>
+  --statement <text>     Fact statement (min 10 chars)
+  --subject <text>       Entity or concept this fact is about
+  --predicate <text>     Relationship verb (e.g. "has deadline")
+  --object <text>        The target of the predicate
+  --source-doc <path>    Source document path
+  --source-location <text>  Page/section reference
+  --source-quote <text>  Exact quote (max 500 chars)
+  --confidence <0-1>     Confidence score
+  [--tags <a,b,c>]       Comma-separated tags`,
+  'add-entity': `add-entity --workspace <path> --domain <name>
+  --name <text>          Entity name
+  --type <EntityType>    ${ENTITY_TYPES.join(', ')}
+  --summary <text>       Description (min 50 chars)
+  --confidence <0-1>     Confidence score
+  --weight <0-1>         Weight score
+  [--tags <a,b,c>]       Comma-separated tags
+  Evidence via stdin (one per line, pipe-delimited):
+    source:<path>|location:<ref>|quote:<text>|confidence:<0-1>`,
+  'batch-entities': `batch-entities --workspace <path>
+  JSON array via stdin. Each object requires:
+    domain, name, type, summary, confidence, weight, evidence[]
+  Evidence entries: {source, location, quote, confidence}`,
+  'add-edge': `add-edge --workspace <path> --domain <name>
+  --from <entity_id>     Source entity (domain:name)
+  --to <entity_id>       Target entity (domain:name)
+  --type <EdgeType>      ${EDGE_TYPES.join(', ')}
+  --description <text>   Why this relationship exists
+  --evidence-source <path>  Source document
+  --evidence-location <text>  Page/section
+  --confidence <0-1>     Confidence score
+  --weight <0-1>         Weight score`,
+  'add-contradiction': `add-contradiction --workspace <path> --domain <name>
+  --description <text>   What the contradiction is about
+  --source1 <path>       First source document
+  --quote1 <text>        Quote from first source (max 500 chars)
+  --source2 <path>       Second source document
+  --quote2 <text>        Quote from second source (max 500 chars)
+  --severity <level>     ${SEVERITY_LEVELS.join(', ')}
+  [--related-entities <a,b>]  Comma-separated entity IDs`,
+  'add-question': `add-question --workspace <path> --domain <name>
+  --question <text>      The open question
+  --context <text>       Background context
+  --priority <level>     ${PRIORITY_LEVELS.join(', ')}
+  [--related-entities <a,b>]  Comma-separated entity IDs`,
+  'remove-edge': `remove-edge --workspace <path> --domain <name|_cross_domain>
+  --from <entity_id> --to <entity_id> --type <EdgeType>`,
+  'validate': `validate --workspace <path> --file <path>  Validate a KG JSON file`
+};
+
 if (!command || command === 'help') {
+  const subcmd = args._stdin ? null : positional[1] || Object.keys(args)[0];
+  if (subcmd && COMMAND_HELP[subcmd]) {
+    console.log(`Usage: node kg-write.js ${COMMAND_HELP[subcmd]}`);
+    process.exit(0);
+  }
   console.log(`Usage: node kg-write.js <command> --workspace <path> [options]
+  Run "node kg-write.js help <command>" for detailed argument info.
 
 Commands:
   add-domain          Register a new domain
   add-fact            Append a fact to a domain fact file
   add-entity          Create an entity file (evidence via stdin)
+  batch-entities      Create multiple entities from a JSON array via stdin
   add-edge            Append an edge to relationships.json
   add-contradiction   Add a contradiction to the active array
   remove-edge         Remove an edge from relationships.json or cross_domain.json
-                      --domain <name|_cross_domain> --from <id> --to <id> --type <type>
-                      Use --domain _cross_domain to write to cross_domain_contradictions.json
   add-question        Add an open question to the active array
   validate            Validate a KG JSON file`);
   process.exit(0);

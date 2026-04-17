@@ -274,19 +274,21 @@ These are guidelines, not hard minimums. A boilerplate README genuinely has 0
 extractable facts. But a 200-page QA manual with 5 facts means you are skimming
 and need to go deeper.
 
-## Non-Text File Formats
+## Medallion Data Architecture
 
-Claude cannot natively read binary formats like DOCX, XLSX, PPTX, or scanned
-PDFs. When encountering these files, use the Kreuzberg skill to extract text
-first, then apply the fact protocol to the extracted text.
+Magellan uses a three-layer data architecture:
 
-Kreuzberg runs locally — no data leaves the machine. It handles 91+ formats
-including Office documents, scanned PDFs (via Tesseract OCR), images, email,
-and archives.
+- **Bronze:** Raw source files in the workspace. Never read directly during analysis.
+- **Silver:** Text extracts in `.magellan/silver/`. Produced by kreuzberg during
+  Step 2a or the add command. All fact extraction reads from silver only.
+- **Gold:** The knowledge graph in `.magellan/domains/`. Built from silver data.
 
-If Kreuzberg is not installed, record the file with disposition `unreadable`
-and note "binary format — install Kreuzberg for extraction" in the progress
-display.
+The add command and pipeline Step 2a handle bronze-to-silver extraction. By the
+time this ingestion skill runs, the text is already in silver. Read from
+`.magellan/silver/<path>.txt`, not from the original file.
+
+If a silver file doesn't exist for a source, the extraction step was skipped.
+Do not run kreuzberg inline during fact extraction — flag the file and move on.
 
 ## Reading Large Documents
 
