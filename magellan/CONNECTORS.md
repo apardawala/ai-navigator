@@ -12,6 +12,7 @@ to enhance Magellan's workflows:
 | Category | Use Case | Example Tools |
 |----------|----------|---------------|
 | document-extraction | Extract text from binary formats (DOCX, XLSX, PPTX, scanned PDFs) | **Kreuzberg** (recommended) |
+| verification | Cross-check extracted facts against source documents | **Gemini CLI** (with workspace extension) |
 | ~~project-tracker~~ | Route open questions to your team as tickets | Jira, Linear, Asana, GitHub Issues |
 | ~~chat~~ | Send contradiction summaries to team channels | Slack, Microsoft Teams |
 | ~~knowledge-base~~ | Fetch referenced documents from team wikis | Confluence, Notion, Guru |
@@ -28,6 +29,21 @@ npx skills add kreuzberg-dev/kreuzberg
 
 Once installed, the ingestion skill automatically uses Kreuzberg for files
 Claude cannot read natively. No additional configuration needed.
+
+### Gemini CLI (Fact Verification)
+
+When Gemini CLI is installed with the Google Workspace extension, it can access
+internal project documents (Google Docs, Sheets, etc.) that Claude cannot reach.
+Use it as a verification step during fact extraction:
+
+```bash
+brew install gemini  # or: npm install -g @anthropic-ai/gemini-cli
+glab auth login      # authenticate with workspace
+```
+
+During pipeline Step 2b (fact extraction), pipe extracted facts to Gemini after
+each file to verify accuracy and check for missed content. Gemini serves as an
+independent reviewer with access to the broader document context.
 
 These integrations are **tool-agnostic** — any MCP server in the category works.
 Add the relevant MCP servers to your `.mcp.json` to enable them.

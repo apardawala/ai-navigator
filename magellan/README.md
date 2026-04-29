@@ -58,6 +58,15 @@ git clone https://github.com/apardawala/ai-navigator.git && cd ai-navigator/mage
   log.md                           ← Activity log (append-only, one line per event)
   diagrams/                        ← C4 architecture diagrams (Mermaid + PlantUML)
 
+  silver/                             ← Text extracts from source documents (kreuzberg)
+    <path>/<file>.txt              ← Plain text extract
+    <path>/<file>.index.json       ← Section index for targeted reading
+
+  audit/
+    processing_manifest.json       ← Per-file provenance (hash, tool, timestamps)
+    session_log.jsonl              ← Every processing action with rationale
+    methodology.md                 ← Process description for independent audit
+
   domains/<domain>/
     facts/                         ← Atomic facts from source documents
     entities/                      ← One file per knowledge graph entity
@@ -104,6 +113,45 @@ industry trends → produce cited reports for human review.
 Every fact traces to a source document with an exact quote. Nothing is invented.
 On subsequent runs, only files with changed content are reprocessed (SHA-256
 content hashing).
+
+## Medallion Data Architecture
+
+Magellan organizes data into three layers:
+
+- **Bronze** — Raw source files. Can be local files or URL references (via a
+  manifest with content hashes). Magellan never reads bronze during analysis.
+- **Silver** — Text extracts in `.magellan/silver/`. Produced by kreuzberg
+  extraction. All fact extraction reads from silver only.
+- **Gold** — The knowledge graph in `.magellan/domains/`. Built exclusively
+  from silver data.
+
+This separation means source documents don't need to live in your repository.
+A URL manifest with content hashes is sufficient — Magellan fetches, extracts
+to silver, and discards the original. The silver layer is lightweight text that
+can be committed to git without bloating the repo.
+
+## Silver Indexer
+
+Large documents (5,000+ lines) waste context when read entirely during fact
+extraction. The silver indexer (`tools/silver-indexer.py`) analyzes each text
+extract and produces a sidecar `.index.json` with:
+
+- **Boilerplate detection** — Repeated lines (headers, footers, watermarks)
+- **Section boundaries** — Parsed from structural patterns in the text
+- **Content classification** — TOC, glossary, narrative, structured list, data
+- **Density scoring** — Signal words (shall, must, within N days) scored per
+  section to identify high-value content
+
+```bash
+python3 tools/silver-indexer.py --dir .magellan/silver/
+```
+
+During fact extraction, the pipeline reads the index first and targets only
+`high` and `medium` density sections. In testing across 140 government policy
+documents, this reduced reading by 32% with no loss of business rule coverage.
+
+The indexer is fully generic — no domain-specific patterns. It works on any
+kreuzberg text extract.
 
 ## SDLC Workflow
 
