@@ -279,16 +279,25 @@ and need to go deeper.
 Magellan uses a three-layer data architecture:
 
 - **Bronze:** Raw source files in the workspace. Never read directly during analysis.
-- **Silver:** Text extracts in `.magellan/silver/`. Produced by kreuzberg during
-  Step 2a or the add command. All fact extraction reads from silver only.
+- **Silver:** Rich JSON extracts in `.magellan/silver/`, produced by
+  `magellan-extract.py` (kreuzberg Python API). All fact extraction reads
+  from silver only.
 - **Gold:** The knowledge graph in `.magellan/domains/`. Built from silver data.
 
 The add command and pipeline Step 2a handle bronze-to-silver extraction. By the
-time this ingestion skill runs, the text is already in silver. Read from
-`.magellan/silver/<path>.txt`, not from the original file.
+time this ingestion skill runs, the content is already in silver as `.silver.json`
+files. Read from `.magellan/silver/<path>.silver.json`, not from the original file.
+
+Each silver JSON contains:
+- `content` — extracted text (markdown for documents, source for code)
+- `file_type` — "document" or "code"
+- `metadata` — title, authors, dates, page count
+- `sections` — TOC-derived section list (documents only)
+- `code_intelligence` — AST structure, imports, symbols (code only)
+- `language` — detected language (use to filter non-English docs)
 
 If a silver file doesn't exist for a source, the extraction step was skipped.
-Do not run kreuzberg inline during fact extraction — flag the file and move on.
+Do not run extraction inline during fact extraction — flag the file and move on.
 
 ## Reading Large Documents
 

@@ -40,12 +40,24 @@ fi
 echo "  Skills:   $(ls -d "$SKILL_DIR"/*/ 2>/dev/null | wc -l | tr -d ' ') installed"
 
 # Install tools
-for tool in kg-write.js kg-query.js kg-ops.js; do
+for tool in kg-write.js kg-query.js kg-ops.js magellan-extract.py; do
   if [ -f "$REPO_DIR/tools/$tool" ]; then
     cp "$REPO_DIR/tools/$tool" "$TOOL_DIR/$tool"
   fi
 done
 echo "  Tools:    $(ls "$TOOL_DIR" | wc -l | tr -d ' ') installed"
+
+# Check kreuzberg
+if python3 -c "import kreuzberg" 2>/dev/null; then
+  echo "  Kreuzberg: $(python3 -c 'import kreuzberg; print(kreuzberg.__version__)')"
+else
+  echo ""
+  echo "  WARNING: kreuzberg is not installed. Install with:"
+  echo "    pip install kreuzberg"
+  echo ""
+  echo "  For code intelligence, also run:"
+  echo "    python3 $TOOL_DIR/magellan-extract.py --setup"
+fi
 
 # Install statusline
 if [ -f "$REPO_DIR/scripts/statusline.js" ]; then

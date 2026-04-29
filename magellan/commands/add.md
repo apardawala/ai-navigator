@@ -27,13 +27,16 @@ Verify `.magellan/` exists. If not, initialize the workspace:
 
 When a file path is provided:
 
-1. Extract the file to silver. Determine the silver path:
-   `.magellan/silver/<relative_path>.txt`. Create parent directories as needed.
-   Run `kreuzberg extract <path>` via Bash and write the output to the silver
-   path. If kreuzberg is not installed, fall back to the Read tool. All
-   subsequent reads use the silver file, not the original.
-2. If it's a code file, check `.magellan/language_guides/` for a matching language
-   guide. Read the guide for context before extracting facts.
+1. Extract the file to silver. Run:
+   ```bash
+   python3 ~/.claude/tools/magellan/magellan-extract.py <path> --output .magellan/silver/
+   ```
+   This produces a `.silver.json` file with structured content, metadata,
+   and (for code) AST intelligence. All subsequent reads use the silver file.
+   kreuzberg is required — if not installed, the script reports the error.
+2. If it's a code file, the silver JSON includes `code_intelligence` with
+   structure, imports, and symbols. Also check `.magellan/language_guides/`
+   for a matching language guide for additional context.
 3. Verify the target domain is registered in `.magellan/domains.json`. If not,
    register it: `node ~/.claude/tools/magellan/kg-write.js add-domain --workspace <path> --domain <name>`.
 4. Apply the ingestion skill to extract atomic facts.

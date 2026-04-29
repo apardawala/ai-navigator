@@ -1308,10 +1308,10 @@ function cmd_audit_methodology(args) {
     }
   }
 
-  // Get kreuzberg version
+  // Get kreuzberg version (Python API)
   let kreuzbergVersion = 'unknown';
   try {
-    kreuzbergVersion = execSync('kreuzberg version 2>/dev/null || echo unknown', { encoding: 'utf8' }).trim();
+    kreuzbergVersion = execSync('python3 -c "import kreuzberg; print(kreuzberg.__version__)" 2>/dev/null || echo unknown', { encoding: 'utf8' }).trim();
   } catch (_) {}
 
   // Get session log entry count

@@ -130,32 +130,36 @@ A URL manifest with content hashes is sufficient — Magellan fetches, extracts
 to silver, and discards the original. The silver layer is lightweight text that
 can be committed to git without bloating the repo.
 
-## Silver Indexer
+## Extraction Layer
 
-Large documents waste context when read entirely during fact extraction. The
-silver indexer (`tools/silver-indexer.py`) uses a two-layer approach:
-
-1. **Deterministic boilerplate detection** — Finds repeated lines (headers,
-   footers, watermarks) statistically. No domain-specific patterns.
-2. **LLM document mapping** — For files over 1,500 lines, pipes the first 200
-   lines to a fast LLM (Gemini CLI by default) which produces a structured
-   section map with content types (toc, glossary, procedure, policy, narrative).
-   The section titles are then resolved to exact line numbers via grep.
+`tools/magellan-extract.py` uses kreuzberg's Python API to produce rich JSON
+silver files (`.silver.json`) that carry their own structure — no separate
+indexer needed.
 
 ```bash
-python3 tools/silver-indexer.py --dir .magellan/silver/    # Index all files
-python3 tools/silver-indexer.py document.txt               # Index one file
-python3 tools/silver-indexer.py --no-llm --dir .magellan/silver/  # Boilerplate only
+# Extract one file
+python3 tools/magellan-extract.py document.pdf --output .magellan/silver/
+
+# Extract all files in a directory
+python3 tools/magellan-extract.py --dir /path/to/docs --output .magellan/silver/
+
+# Setup tree-sitter parsers for code intelligence (one-time)
+python3 tools/magellan-extract.py --setup
 ```
 
-Content types map to density levels: `procedure`/`policy` → high (read first),
-`narrative` → medium, `glossary`/`toc`/`data` → skip/reference. During fact
-extraction, the pipeline reads the `.index.json` first and targets only high
-and medium density sections.
+Each `.silver.json` contains:
 
-Files under 1,500 lines skip the LLM call — they're small enough to read
-entirely. If Gemini CLI is unavailable, falls back to full-read mode without
-blocking the pipeline.
+- **Documents**: markdown content with headers, metadata (title, authors, dates),
+  TOC-derived sections, per-page content, detected language, quality score.
+  Boilerplate is stripped automatically by kreuzberg's `ContentFilterConfig`.
+- **Code** (248 languages): source content with tree-sitter AST — classes,
+  methods, imports, symbols, and code metrics.
+- **Text/Markdown**: content with metadata in the same JSON format.
+
+kreuzberg is required (`pip install kreuzberg`). Uses the Python API (not CLI
+binary), so it respects system SSL certificates and works behind corporate
+proxies. Code intelligence requires a one-time `--setup` to download
+tree-sitter parsers (~400MB).
 
 ## SDLC Workflow
 

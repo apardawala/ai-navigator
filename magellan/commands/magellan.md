@@ -222,8 +222,9 @@ No Magellan workspace found.
    ```
    mkdir -p .magellan/domains .magellan/diagrams .magellan/language_guides .magellan/silver
    ```
-   The `.magellan/silver/` directory stores kreuzberg text extracts (the silver
-   layer). Source files in the workspace are bronze. The KG in `domains/` is gold.
+   The `.magellan/silver/` directory stores rich JSON extracts (the silver
+   layer), produced by `magellan-extract.py` using kreuzberg's Python API.
+   Source files in the workspace are bronze. The KG in `domains/` is gold.
    Magellan never reads bronze files directly during analysis — only silver.
 2. Write `.magellan/state.json`: `{"initialized_at": "<ISO timestamp>"}`
 3. Copy starter language guides from `skills/ingestion/language_guides/` to
@@ -233,8 +234,11 @@ No Magellan workspace found.
 6. Install statusline: copy `scripts/statusline.js` to `~/.claude/hooks/statusline.js`
    (skip if the file already exists and contains "Magellan Statusline").
 7. Install tools: ensure `~/.claude/tools/magellan/` contains `kg-write.js`,
-   `kg-query.js`, and `kg-ops.js`. If missing, copy from the Magellan
-   `tools/` directory. The `install.sh` script handles this on initial setup.
+   `kg-query.js`, `kg-ops.js`, and `magellan-extract.py`. If missing, copy
+   from the Magellan `tools/` directory. The `install.sh` script handles this
+   on initial setup.
+8. Verify kreuzberg: run `python3 -c "import kreuzberg"` via Bash. If it fails,
+   display: "kreuzberg is required. Install with: pip install kreuzberg" and stop.
 
 **Resume check**: If `.magellan/` exists and `state.json` has `pipeline_step`,
 read `session_notes` to restore working context, then offer to resume from
@@ -291,22 +295,31 @@ for each. After this, the domain set is locked — extraction must use registere
 
 **Quality Gate.** Update state.json.
 
-### Step 2a: Extract Text — Bronze to Silver
+### Step 2a: Extract Content — Bronze to Silver
 
-This step extracts text from all source files (bronze) into `.magellan/silver/`
-using kreuzberg. After this step, Magellan never reads bronze files again.
+This step extracts content from all source files (bronze) into `.magellan/silver/`
+using `magellan-extract.py` (kreuzberg Python API). After this step, Magellan
+never reads bronze files again.
 
-For each file in the processing list:
+Run the extraction:
 
-1. Determine the silver path: `.magellan/silver/<relative_path>.txt`
-   (e.g., `docs/manual.pdf` → `.magellan/silver/docs/manual.pdf.txt`).
-   Create parent directories as needed.
-2. Run `kreuzberg extract <bronze_path>` via Bash and write the output to the
-   silver path. If kreuzberg fails, fall back to the Read tool and write the
-   content to silver. If both fail, record disposition as `unreadable`.
-3. Record the extraction in `.magellan/processed_files.json` with disposition
-   `extracted` and the content hash from Step 1.
-4. Display: "Extracted [N/total]: filename (M lines → silver)"
+```bash
+python3 ~/.claude/tools/magellan/magellan-extract.py --dir <workspace> --output .magellan/silver/
+```
+
+This produces `.silver.json` files for each source file containing:
+- **Documents** (PDF, DOCX, HTML): markdown content with headers, metadata
+  (title, authors, dates), sections from TOC anchors, per-page content,
+  detected language, quality score. Boilerplate is stripped automatically.
+- **Code** (Java, Python, TS, COBOL, 248 languages): source content with
+  tree-sitter AST (classes, methods, imports, symbols, metrics).
+- **Text/Markdown**: content with metadata.
+
+If extraction fails for a file, the error is reported and the user decides
+whether to skip or fix the issue. Nothing is silently skipped.
+
+Record each file's disposition in `.magellan/processed_files.json` with
+disposition `extracted` and the content hash.
 
 After all files, display:
 
@@ -315,8 +328,7 @@ Bronze → Silver Extraction
 ============================
 Total files:   52
   extracted:   47
-  no_text:      3
-  unreadable:   2
+  failed:       5 (reported to user)
   ---
   Accounted:   52/52
 ```
@@ -328,15 +340,19 @@ Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --s
 
 Read from `.magellan/silver/` only. Never read bronze files in this step.
 
-For each extracted file in silver:
+For each `.silver.json` file in silver:
 
-1. **Check file size** via Bash (`wc -l`).
-2. **Read** the silver file following the ingestion skill's reading strategy:
-   - Small files (under ~5,000 lines): read entire file in one pass.
-   - Large files (over ~5,000 lines): read in sections using `offset` and `limit`.
-     See the "Reading Large Documents" section in the ingestion skill.
-   - If it's a code file, check `.magellan/language_guides/` for a matching guide.
-     Read the guide once per language (cache in context for subsequent files).
+1. **Read the silver JSON** to get `file_type`, `content`, `sections`, `metadata`,
+   and `code_intelligence`.
+2. **For documents**: Use sections and metadata to guide targeted reading.
+   Read `content` (markdown with headers). For large documents (>1500 lines),
+   prioritize sections typed as `procedure` or `policy` over `toc`, `glossary`,
+   or `narrative`. Use `offset` and `limit` to read specific sections.
+3. **For code**: Read `code_intelligence` for structure (classes, methods,
+   imports, symbols). Use this to understand the file's architecture before
+   reading the full source in `content`.
+4. **Check language**: If `language` is not English and this is a documents-only
+   KG, skip with disposition `skipped_language`.
 3. **Extract facts** by applying the ingestion skill.
 4. **Write each fact** using `~/.claude/tools/magellan/kg-write.js add-fact` with the appropriate
    arguments (--workspace, --domain, --statement, --subject, etc.). The tool

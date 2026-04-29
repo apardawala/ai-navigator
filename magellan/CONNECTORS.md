@@ -17,18 +17,27 @@ to enhance Magellan's workflows:
 | ~~chat~~ | Send contradiction summaries to team channels | Slack, Microsoft Teams |
 | ~~knowledge-base~~ | Fetch referenced documents from team wikis | Confluence, Notion, Guru |
 
-### Kreuzberg (Document Extraction)
+### Kreuzberg (Document & Code Extraction)
 
-Extracts text, tables, and metadata from 91+ file formats. Runs fully local —
-no data leaves the machine. Install as a Claude Code skill:
+**Required dependency.** Extracts content from 91+ document formats and 248
+programming languages. Runs fully local — no data leaves the machine.
 
 ```bash
 pip install kreuzberg
-npx skills add kreuzberg-dev/kreuzberg
 ```
 
-Once installed, the ingestion skill automatically uses Kreuzberg for files
-Claude cannot read natively. No additional configuration needed.
+Magellan uses kreuzberg's Python API (not the CLI binary) via
+`tools/magellan-extract.py`. This avoids SSL/proxy issues with the Rust CLI
+and provides richer output (metadata, code intelligence, language detection).
+
+For code intelligence (tree-sitter AST analysis), run the one-time setup:
+
+```bash
+python3 tools/magellan-extract.py --setup
+```
+
+This downloads ~400MB of tree-sitter language parsers to `~/.magellan/parsers/`.
+For air-gapped environments, copy the parsers folder from a connected machine.
 
 ### Gemini CLI (Fact Verification)
 
