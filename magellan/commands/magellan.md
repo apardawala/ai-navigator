@@ -34,20 +34,21 @@ pipeline (Phase 1 Discovery + Phase 2 Design).
 
 ## Execution Rules
 
-1. **No background agents.** Every step runs in the foreground. Process files
-   sequentially. Complete each step fully before starting the next.
+1. **Step 0 runs in the background.** Preprocessing (init, discover, extract)
+   is deterministic I/O work. Run it in the background and notify the user
+   when it completes. Steps 1+ run in the foreground.
 
 2. **No step skipping.** Every numbered step is MANDATORY. Do not combine steps.
    If a step fails, record the failure and continue — never skip silently.
 
-3. **Quality gate after every step.** Apply the pipeline-review skill after each
-   step. Fix blockers before proceeding. Accumulate findings in
+3. **Quality gate after every foreground step.** Apply the pipeline-review skill
+   after each step. Fix blockers before proceeding. Accumulate findings in
    `.magellan/pipeline_feedback.json`. Include `started_at` and `completed_at`
    timestamps in each feedback entry for per-step timing. Update `session_notes`
-   in `state.json` with 2-3 sentences of working context — observations,
-   patterns, naming quirks, and anything a fresh session would need to continue.
+   in `state.json` with 2-3 sentences of working context.
 
-4. **No subagent delegation.** Every step executes in the main conversation context.
+4. **No subagent delegation for analysis steps.** Steps 1+ execute in the main
+   conversation context. Step 0 is the only step that runs independently.
 
 5. **Context hygiene.** Use Glob to count files rather than reading them all.
    Use Read with offset/limit for large files. Read only the fields you need.
@@ -151,7 +152,7 @@ Dry Run — Pipeline Preview
 Files to process:    12 (8 new, 4 changed)
 Files to skip:       38 (content unchanged)
 Estimated domains:   3 (billing, title, transportation)
-Pipeline steps:      23 (Phase 1: 11, Phase 2: 11, Research: 1)
+Pipeline steps:      19 (Step 0: background, Phase 1: 1-9, Phase 2: 10-18, Research: 19)
 
 New files:
   docs/Q4_ops_update.pdf
@@ -214,147 +215,91 @@ No Magellan workspace found.
 
 ## Pipeline
 
-### Step 1: Initialize and Discover Files
+### Step 0: Preprocessing (Background)
 
-**Initialize** (if `.magellan/` doesn't exist):
+This step runs in the background. It initializes the workspace, discovers
+files, and extracts them to silver. No LLM judgment needed — purely
+deterministic I/O. When the pipeline starts, check if Step 0 is already
+complete by reading `.magellan/state.json`:
 
-1. Create directory structure via Bash:
+- If `pipeline_step >= 0` and silver files exist → Step 0 is done, proceed.
+- If `.magellan/` doesn't exist or silver is missing/incomplete → run Step 0
+  in the background and notify the user when it completes.
+
+**What Step 0 does:**
+
+1. **Initialize** (if `.magellan/` doesn't exist):
+   - Create directory structure: `mkdir -p .magellan/domains .magellan/diagrams .magellan/language_guides .magellan/silver .magellan/audit`
+   - Write `.magellan/state.json`: `{"initialized_at": "<ISO timestamp>"}`
+   - Copy starter language guides from `skills/ingestion/language_guides/`
+   - Initialize `.magellan/pipeline_feedback.json`, `.magellan/domains.json`
+   - Install statusline and tools if missing
+   - Verify kreuzberg: `python3 -c "import kreuzberg"`. If it fails, stop
+     with: "kreuzberg is required. Install with: pip install kreuzberg"
+
+2. **Discover files**:
+   - Full mode: list all files excluding `.magellan/` and `.git/`
+   - Incremental mode: use `git diff` + `git ls-files` for new/modified
+   - Content hash check via `kg-ops.js hash-check`. Process only new/changed.
+
+3. **Extract to silver**:
+   ```bash
+   python3 ~/.claude/tools/magellan/magellan-extract.py --dir <workspace> --output .magellan/silver/
    ```
-   mkdir -p .magellan/domains .magellan/diagrams .magellan/language_guides .magellan/silver
-   ```
-   The `.magellan/silver/` directory stores rich JSON extracts (the silver
-   layer), produced by `magellan-extract.py` using kreuzberg's Python API.
-   Source files in the workspace are bronze. The KG in `domains/` is gold.
-   Magellan never reads bronze files directly during analysis — only silver.
-2. Write `.magellan/state.json`: `{"initialized_at": "<ISO timestamp>"}`
-3. Copy starter language guides from `skills/ingestion/language_guides/` to
-   `.magellan/language_guides/` (skip existing — user may have customized).
-4. Initialize `.magellan/pipeline_feedback.json` with empty structure.
-5. Initialize `.magellan/domains.json`: `{"domains": []}`.
-6. Install statusline: copy `scripts/statusline.js` to `~/.claude/hooks/statusline.js`
-   (skip if the file already exists and contains "Magellan Statusline").
-7. Install tools: ensure `~/.claude/tools/magellan/` contains `kg-write.js`,
-   `kg-query.js`, `kg-ops.js`, and `magellan-extract.py`. If missing, copy
-   from the Magellan `tools/` directory. The `install.sh` script handles this
-   on initial setup.
-8. Verify kreuzberg: run `python3 -c "import kreuzberg"` via Bash. If it fails,
-   display: "kreuzberg is required. Install with: pip install kreuzberg" and stop.
+   Produces `.silver.json` files containing:
+   - **Documents**: markdown content, metadata, sections, language, quality score
+   - **Code**: source with tree-sitter AST (structure, imports, symbols)
+   - **Text/Markdown**: content with metadata
 
-**Resume check**: If `.magellan/` exists and `state.json` has `pipeline_step`,
-read `session_notes` to restore working context, then offer to resume from
-the last completed step.
+4. **Record dispositions** in `.magellan/processed_files.json`
 
-**Environment detection** (runs every session, after guides are in place):
+5. **Update state**: `pipeline_step: 0`
 
-Use Glob to check for AS/400 indicators in the workspace:
-- Directories named `QRPGSRC`, `QDDSSRC`, `QCLSRC`, `QCLRSRC`, or `QMNUSRC`
-- Files with `.rpgle`, `.sqlrpgle`, `.cblle`, or `.clle` extensions
-
-If any match: read `.magellan/language_guides/as400_modernization.md` once and
-keep it in context for the full pipeline run. Display:
-`AS/400 environment detected — environment guide loaded.`
-
-This is the only environment guide check currently defined. Future environment
-guides (e.g., mainframe z/OS, OpenVMS) should follow the same pattern: add
-detection indicators here and a corresponding guide in `language_guides/`.
-
-**Discover files**:
-
-- **Full mode**: Use Glob to list all files, excluding `.magellan/` and `.git/`.
-- **Incremental mode**: Read `state.json` for `last_run.git_ref`. Use
-  `git diff --name-only <ref> HEAD` and `git ls-files --others --exclude-standard`
-  via Bash to find new/modified files.
-
-**Content hash check** (both modes): Run `node ~/.claude/tools/magellan/kg-ops.js hash-check --workspace <path>`.
-The tool scans all workspace files, computes SHA-256 hashes, and compares against
-`processed_files.json`. It returns `{new: [...], changed: [...], unchanged: [...]}`.
-Process only files in `new` and `changed` lists. Mark `unchanged` files as
-`skipped_unchanged` using `node ~/.claude/tools/magellan/kg-ops.js update-processed`.
-
-**Track changed domains**: For files that DID change (hash mismatch), note
-which domain they previously belonged to. Those domains will need entity and
-relationship re-evaluation in Steps 3-6.
-
-Display: "Found N files to process (M skipped — content unchanged)."
-
-**Domain Discovery** (first run only): Scan all files to identify business
-domains. Read file names, headers, and first few lines to propose a domain list.
-Present to the user for batch approval:
-
+**Display when complete:**
 ```
-Proposed domains:
-  1. auction_operations  (storage fees, floor plan fees, title inventory)
-  2. dealer_management   (dealer accounts, registration)
-  3. vehicle_logistics   (transportation, check-in)
-
-Approve all, or edit? [all/edit]
-```
-
-Register approved domains: `node ~/.claude/tools/magellan/kg-write.js add-domain --workspace <path> --domain <name>`
-for each. After this, the domain set is locked — extraction must use registered domains only.
-
-**Quality Gate.** Update state.json.
-
-### Step 2a: Extract Content — Bronze to Silver
-
-This step extracts content from all source files (bronze) into `.magellan/silver/`
-using `magellan-extract.py` (kreuzberg Python API). After this step, Magellan
-never reads bronze files again.
-
-Run the extraction:
-
-```bash
-python3 ~/.claude/tools/magellan/magellan-extract.py --dir <workspace> --output .magellan/silver/
-```
-
-This produces `.silver.json` files for each source file containing:
-- **Documents** (PDF, DOCX, HTML): markdown content with headers, metadata
-  (title, authors, dates), sections from TOC anchors, per-page content,
-  detected language, quality score. Boilerplate is stripped automatically.
-- **Code** (Java, Python, TS, COBOL, 248 languages): source content with
-  tree-sitter AST (classes, methods, imports, symbols, metrics).
-- **Text/Markdown**: content with metadata.
-
-If extraction fails for a file, the error is reported and the user decides
-whether to skip or fix the issue. Nothing is silently skipped.
-
-Record each file's disposition in `.magellan/processed_files.json` with
-disposition `extracted` and the content hash.
-
-After all files, display:
-
-```
-Bronze → Silver Extraction
-============================
-Total files:   52
-  extracted:   47
-  failed:       5 (reported to user)
+Step 0: Preprocessing Complete
+================================
+Files discovered:  52
+  extracted:       47
+  failed:           5 (see errors above)
   ---
-  Accounted:   52/52
+  Accounted:       52/52
+
+Silver files ready at .magellan/silver/
+Proceed with /magellan to start analysis.
 ```
 
-**Quality Gate.** Run `node ~/.claude/tools/magellan/kg-ops.js quality-gate --step 2`.
-Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 2 --notes "..."`.
+### Step 1: Domain Discovery and Fact Extraction
 
-### Step 2b: Extract Facts — Silver to Gold
+**This step and all subsequent steps run in the foreground.**
 
-Read from `.magellan/silver/` only. Never read bronze files in this step.
+**Resume check**: If `state.json` has `pipeline_step >= 1`, read
+`session_notes` to restore working context and offer to resume.
 
-For each `.silver.json` file in silver:
+**Environment detection**: Check for AS/400 indicators (QRPGSRC, .rpgle,
+.cblle, etc.). If found, load the AS/400 environment guide.
 
-1. **Read the silver JSON** to get `file_type`, `content`, `sections`, `metadata`,
+**Check for verification partner**:
+```bash
+which gemini
+```
+If available, enable Gemini verification at checkpoints.
+
+**Domain Discovery** (first run only): Read silver file metadata (titles,
+content types) to propose domains. Present to the user for approval.
+Register via `kg-write.js add-domain`.
+
+**Fact Extraction** — for each `.silver.json` file:
+
+1. Read the silver JSON for `file_type`, `content`, `sections`, `metadata`,
    and `code_intelligence`.
-2. **For documents**: Use sections and metadata to guide targeted reading.
-   Read `content` (markdown with headers). For large documents (>1500 lines),
-   prioritize sections typed as `procedure` or `policy` over `toc`, `glossary`,
-   or `narrative`. Use `offset` and `limit` to read specific sections.
-3. **For code**: Read `code_intelligence` for structure (classes, methods,
-   imports, symbols). Use this to understand the file's architecture before
-   reading the full source in `content`.
-4. **Check language**: If `language` is not English and this is a documents-only
-   KG, skip with disposition `skipped_language`.
-3. **Extract facts** by applying the ingestion skill.
-4. **Write each fact** using `~/.claude/tools/magellan/kg-write.js add-fact` with the appropriate
+2. **Documents**: Use sections and metadata to guide targeted reading.
+   For large documents (>1500 lines), prioritize `procedure`/`policy`
+   sections. Use `offset`/`limit` for specific sections.
+3. **Code**: Read `code_intelligence` for structure before full source.
+4. **Language filter**: Skip non-English docs with `skipped_language`.
+5. Extract facts by applying the ingestion skill.
+6. Write each fact using `kg-write.js add-fact`. The `--source-doc` should
    arguments (--workspace, --domain, --statement, --subject, etc.). The tool
    handles JSON serialization, schema validation, and fact_count updates.
    The `--source-doc` should reference the original bronze path, not the silver path.
@@ -400,7 +345,7 @@ against silver files, not bronze.
 **Quality Gate.** Run `node ~/.claude/tools/magellan/kg-ops.js quality-gate --step 3`.
 Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 3 --notes "..."`.
 
-### Step 3: Build Graph (Stage 2a)
+### Step 2: Build Graph
 
 Build entities and intra-domain relationships from atomic facts.
 
@@ -419,11 +364,11 @@ For each fact file in affected domains:
 Run `node ~/.claude/tools/magellan/kg-ops.js verify-edges --workspace <path>`. If any dangling
 references are found, flag as warning.
 
-**Quality Gate.** Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 3 --notes "..."`.
+**Quality Gate.** Update state.json.
 
-### Step 4: Cross-Domain Linking (Stage 2b)
+### Step 3: Cross-Domain Linking
 
-Separate, mandatory pass. Do NOT fold into Step 3.
+Separate, mandatory pass. Do NOT fold into Step 2.
 
 1. Use Glob to list all domains.
 2. For each domain, list entities and read names + summaries.
@@ -438,9 +383,9 @@ Skip if fewer than 2 domains.
 Run `node ~/.claude/tools/magellan/kg-ops.js verify-edges --workspace <path>`. Checks both
 intra-domain and cross-domain edges. Flag dangling references as warning.
 
-**Quality Gate.** Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 4 --notes "..."`.
+**Quality Gate.** Update state.json.
 
-### Step 5: Entity Deduplication
+### Step 4: Entity Deduplication
 
 Scan each domain for near-duplicate entities (>80% name similarity or
 near-identical summaries). Merge duplicates: keep the entity with more evidence,
@@ -455,7 +400,7 @@ lost during merge, flag as blocker and restore from the superseded entity file
 
 **Quality Gate.** Update state.json.
 
-### Step 6: Domain Summarization (Stage 2c)
+### Step 5: Domain Summarization
 
 For each domain:
 1. Run `node ~/.claude/tools/magellan/kg-ops.js hub-scores --workspace <path> --domain <name>` to
@@ -466,40 +411,34 @@ For each domain:
 
 **Quality Gate.** Update state.json.
 
-### Step 7: Onboarding Guide
+### Step 6: Onboarding Guide
 
 Apply the onboarding-guide skill to generate `.magellan/onboarding_guide.md`.
 
 **Quality Gate.** Update state.json.
 
-### Step 8: Contradictions Dashboard
+### Step 7: Contradictions Dashboard
 
 Apply the dashboard-generation skill to generate the markdown and HTML dashboard.
 
 **Quality Gate.** Update state.json.
 
-### Step 9: C4 Architecture Diagrams
+### Step 8: Diagrams and Graph Explorer
 
-Apply the diagram-generation skill. Generate both Mermaid and PlantUML for
-each level (context, containers, per-domain components).
+1. Apply the diagram-generation skill. Generate Mermaid and PlantUML for
+   context, containers, and per-domain components.
+2. Generate interactive graph: `kg-ops.js graph --workspace <path>`
+   → `.magellan/graph.html`
 
 **Quality Gate.** Update state.json.
 
-### Step 9b: Graph Explorer
+### Step 9: Finalize Phase 1
 
-Generate the interactive graph visualization:
-`node ~/.claude/tools/magellan/kg-ops.js graph --workspace <path>`
-
-This produces `.magellan/graph.html` — a self-contained HTML file that can be
-opened in any browser to explore the knowledge graph visually.
-
-### Step 10: Update State and Index
-
-1. Run `node ~/.claude/tools/magellan/kg-ops.js update-state --workspace <path> --step 10 --set-last-run --file-count N`.
-2. Run `node ~/.claude/tools/magellan/kg-ops.js rebuild-index --workspace <path>`.
+1. Run `kg-ops.js update-state --workspace <path> --step 9 --set-last-run --file-count N`.
+2. Run `kg-ops.js rebuild-index --workspace <path>`.
 3. Display status dashboard.
 
-### Step 11: Phase 1 Verification
+**Phase 1 Verification:**
 
 Verify Phase 1 outputs exist and contain meaningful content:
 - At least 1 domain with entities
@@ -516,49 +455,45 @@ Failure conditions STOP the pipeline. Warning conditions are logged.
 
 Runs automatically after Phase 1 verification.
 
-### Step 12: Business Rules Per Domain
+### Step 10: Business Rules Per Domain
 
 Classify rules as HARD / SOFT / QUESTIONABLE. Cite source entities.
 
-### Step 13: DDD Specs Per Domain
+### Step 11: DDD Specs Per Domain
 
 Bounded context: entities, aggregates, events, commands, integration points.
 
-### Step 14: Implementation Contracts Per Domain
+### Step 12: Implementation Contracts Per Domain
 
 API contracts, event schemas, data models, integration contracts.
 
-### Step 15: Per-Domain Review Documents
+### Step 13: Per-Domain Review Documents
 
 Decisions, proposed system, differences, risks, open items.
 
-**Quality Gate** for Steps 12-15.
+**Quality Gate** for Steps 10-13.
 
-### Step 16: Business Rules Export (MANDATORY)
+### Step 14: Business Rules Export (MANDATORY)
 
 DMN XML, JSON, CSV, Gherkin — four formats per domain.
 
 **Quality Gate.**
 
-### Step 17: OpenAPI + AsyncAPI Specs (MANDATORY)
+### Step 15: OpenAPI + AsyncAPI Specs (MANDATORY)
 
 Per-domain specs + cross-domain integration specs in `_integration/`.
 
 **Quality Gate.**
 
-### Step 18: Phase 2 Verification
+### Step 16: Phase 2 Verification
 
 Verify all deliverables exist with meaningful content.
 
-### Step 19-20: Regenerate Dashboard and Diagrams
+### Step 17: Regenerate Deliverables
 
-Capture any new contradictions or relationships from Phase 2.
+Regenerate dashboard, diagrams, and graph to capture Phase 2 additions.
 
-### Step 21: Update State and Index
-
-Final stats.
-
-### Step 22: Final Summary Report
+### Step 18: Final Summary Report
 
 Display the summary, then run the coverage matrix.
 
@@ -611,7 +546,7 @@ Next steps:
   /magellan                      Check status
 ```
 
-### Step 23: External Research (Optional)
+### Step 19: External Research (Optional)
 
 Offer to run KG-driven external research for Intent Based Modernization.
 
