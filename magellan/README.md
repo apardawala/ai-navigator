@@ -132,26 +132,30 @@ can be committed to git without bloating the repo.
 
 ## Silver Indexer
 
-Large documents (5,000+ lines) waste context when read entirely during fact
-extraction. The silver indexer (`tools/silver-indexer.py`) analyzes each text
-extract and produces a sidecar `.index.json` with:
+Large documents waste context when read entirely during fact extraction. The
+silver indexer (`tools/silver-indexer.py`) uses a two-layer approach:
 
-- **Boilerplate detection** — Repeated lines (headers, footers, watermarks)
-- **Section boundaries** — Parsed from structural patterns in the text
-- **Content classification** — TOC, glossary, narrative, structured list, data
-- **Density scoring** — Signal words (shall, must, within N days) scored per
-  section to identify high-value content
+1. **Deterministic boilerplate detection** — Finds repeated lines (headers,
+   footers, watermarks) statistically. No domain-specific patterns.
+2. **LLM document mapping** — For files over 1,500 lines, pipes the first 200
+   lines to a fast LLM (Gemini CLI by default) which produces a structured
+   section map with content types (toc, glossary, procedure, policy, narrative).
+   The section titles are then resolved to exact line numbers via grep.
 
 ```bash
-python3 tools/silver-indexer.py --dir .magellan/silver/
+python3 tools/silver-indexer.py --dir .magellan/silver/    # Index all files
+python3 tools/silver-indexer.py document.txt               # Index one file
+python3 tools/silver-indexer.py --no-llm --dir .magellan/silver/  # Boilerplate only
 ```
 
-During fact extraction, the pipeline reads the index first and targets only
-`high` and `medium` density sections. In testing across 140 government policy
-documents, this reduced reading by 32% with no loss of business rule coverage.
+Content types map to density levels: `procedure`/`policy` → high (read first),
+`narrative` → medium, `glossary`/`toc`/`data` → skip/reference. During fact
+extraction, the pipeline reads the `.index.json` first and targets only high
+and medium density sections.
 
-The indexer is fully generic — no domain-specific patterns. It works on any
-kreuzberg text extract.
+Files under 1,500 lines skip the LLM call — they're small enough to read
+entirely. If Gemini CLI is unavailable, falls back to full-read mode without
+blocking the pipeline.
 
 ## SDLC Workflow
 
