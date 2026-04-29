@@ -109,6 +109,24 @@ and quote. If you claim an entity exists, read the file. If you claim an
 edge connects two entities, verify both endpoints exist. Use `tools/kg-ops.js`
 for deterministic verification — do not rely on in-context counting or memory.
 
+## Cross-Model Verification
+
+When a secondary LLM CLI is available (e.g. `gemini`), use it as a
+verification partner at pipeline checkpoints:
+
+- **Before starting**: Check availability with `which gemini`. If not
+  available, skip verification steps — never block the pipeline on it.
+- **After fact extraction per file**: Pipe the extracted facts to the
+  secondary model and ask: "Are these facts accurate? What business rules
+  or procedures did I miss?" Fix issues before moving to the next file.
+- **After domain summarization**: Ask the secondary model to review the
+  domain narrative for accuracy and completeness.
+- **After cross-domain linking**: Verify that SAME_AS links are genuine
+  and cross-domain relationships make sense.
+
+The secondary model is a reviewer, not a co-author. It checks your work
+but doesn't write to the KG directly.
+
 ## Scope Drift Check
 
 Before marking a pipeline step complete, verify the output matches the step's

@@ -96,6 +96,34 @@ Before any processing:
 This ensures Magellan principles are always in the system prompt via CLAUDE.md,
 not just loaded as a skill that decays over conversation length.
 
+## Second Step — Check for Verification Partner
+
+After principles injection, check if a secondary LLM CLI is available for
+cross-model verification:
+
+```bash
+which gemini
+```
+
+- **If available**: Display "Gemini CLI detected — will use for fact
+  verification at pipeline checkpoints." Set an internal flag to enable
+  verification gates after fact extraction (Step 2b), domain summarization
+  (Step 6), and cross-domain linking (Step 4).
+- **If not available**: Display "No verification partner detected —
+  proceeding without cross-model checks." Continue normally. The pipeline
+  never blocks on this.
+
+When verification is enabled, after processing each file in Step 2b, pipe
+the extracted facts to the verification partner:
+
+```bash
+gemini -p "Here are N facts extracted from [document]. Are these accurate?
+What business rules or procedures did I miss? Be specific."
+```
+
+Fix any issues the partner flags before moving to the next file. Log
+verification results in the audit trail.
+
 ## Behavior
 
 When run, determine the target workspace:
