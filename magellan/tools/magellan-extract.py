@@ -320,6 +320,8 @@ def extract_directory(dirpath, output_dir):
 
     results = []
     errors = []
+    consecutive_failures = 0
+    MAX_CONSECUTIVE_FAILURES = 3
 
     for i, fpath in enumerate(files, 1):
         rel = fpath.relative_to(dirpath)
@@ -338,12 +340,26 @@ def extract_directory(dirpath, output_dir):
                 lines = silver.get("total_lines", 0)
                 print(f"  [{i}/{len(files)}] {rel}  ({ftype}, {lang}, {lines} lines)")
                 results.append((str(rel), silver))
+                consecutive_failures = 0
             else:
                 errors.append(str(rel))
+                consecutive_failures += 1
                 print(f"  [{i}/{len(files)}] {rel}  FAILED", file=sys.stderr)
         except Exception as e:
             errors.append(str(rel))
+            consecutive_failures += 1
             print(f"  [{i}/{len(files)}] {rel}  ERROR: {e}", file=sys.stderr)
+
+        if i == 1 and consecutive_failures == 1:
+            print("\nERROR: First file failed. Likely a systemic issue.", file=sys.stderr)
+            print(f"  Fix the problem and retry. ({len(files) - 1} files skipped)", file=sys.stderr)
+            sys.exit(1)
+
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            print(f"\nERROR: {MAX_CONSECUTIVE_FAILURES} consecutive failures. Stopping.", file=sys.stderr)
+            print(f"  Extracted {len(results)} files before failure.", file=sys.stderr)
+            print(f"  Fix the issue and retry — already-extracted files will be skipped.", file=sys.stderr)
+            sys.exit(1)
 
     print(f"\nExtracted {len(results)} files ({len(errors)} errors)")
     if errors:
