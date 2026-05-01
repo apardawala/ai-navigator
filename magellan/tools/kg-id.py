@@ -28,12 +28,13 @@ except ImportError:
 
 
 def slugify(text):
-    """Convert text to a filesystem-safe slug."""
+    """Convert text to a kebab-case filesystem-safe slug."""
     s = text.lower().strip()
+    s = re.sub(r'([a-z])([A-Z])', r'\1-\2', s)
     s = re.sub(r'[^a-z0-9\s_-]', '', s)
-    s = re.sub(r'[\s-]+', '_', s)
-    s = re.sub(r'_+', '_', s)
-    return s.strip('_')
+    s = re.sub(r'[\s_]+', '-', s)
+    s = re.sub(r'-+', '-', s)
+    return s.strip('-')
 
 
 def entity_id(domain, name):
