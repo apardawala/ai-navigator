@@ -76,26 +76,29 @@ pipeline (Phase 1 Discovery + Phase 2 Design).
    The audit trail is mandatory. Government clients require full traceability
    from any output back to source documents.
 
-## First Step — Inject Principles into CLAUDE.md
+## First Step — Inject Principles into Agent Context
 
 Before any processing:
 
 1. Read `skills/_principles.md` to load the principles into context.
-2. Check if a `CLAUDE.md` file exists in the workspace root.
-   - **If no CLAUDE.md exists:** Write the contents of `_principles.md` into a
-     new `CLAUDE.md` under a `# Magellan` section. Display:
-     "Created CLAUDE.md with Magellan principles. Please restart the session
+2. Detect the active agent and target the correct context file:
+   - **Claude Code** → `CLAUDE.md`
+   - **Gemini CLI** → `GEMINI.md`
+   - **Other / unknown** → `CLAUDE.md` (default)
+3. Check if the target context file exists in the workspace root.
+   - **If it doesn't exist:** Write the contents of `_principles.md` into a
+     new file under a `# Magellan` section. Display:
+     "Created [file] with Magellan principles. Please restart the session
      so principles are loaded into the system prompt." Stop the pipeline.
-   - **If CLAUDE.md exists but has no `# Magellan` section:** Append the
-     contents of `_principles.md` under a `# Magellan` section at the end of
-     the file. Display: "Added Magellan principles to CLAUDE.md. Please restart
-     the session so principles are loaded into the system prompt." Stop the
-     pipeline.
-   - **If CLAUDE.md exists with a `# Magellan` section:** Principles are
+   - **If it exists but has no `# Magellan` section:** Append the
+     contents of `_principles.md` under a `# Magellan` section at the end.
+     Display: "Added Magellan principles to [file]. Please restart
+     the session so principles are loaded." Stop the pipeline.
+   - **If it exists with a `# Magellan` section:** Principles are
      already injected. Continue to the next step.
 
-This ensures Magellan principles are always in the system prompt via CLAUDE.md,
-not just loaded as a skill that decays over conversation length.
+This ensures Magellan principles are always in the system prompt,
+regardless of which AI agent is running the pipeline.
 
 ## Second Step — Check for Verification Partner
 

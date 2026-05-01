@@ -4,7 +4,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
+const crypto = require('crypto');
 
 // ---------------------------------------------------------------------------
 // Enums (single source of truth — mirrors file-conventions)
@@ -718,7 +719,7 @@ function cmd_hash_check(args) {
 
   for (const file of allFiles) {
     const fullPath = path.join(ws, file);
-    const currentHash = execSync(`shasum -a 256 "${fullPath}" | cut -d' ' -f1`, { encoding: 'utf8' }).trim();
+    const currentHash = crypto.createHash('sha256').update(fs.readFileSync(fullPath)).digest('hex');
     const stored = pfData.files[file];
 
     if (!stored) {
@@ -867,7 +868,7 @@ function cmd_verify_quotes(args) {
           : quote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
         try {
-          execSync(`grep -qF "${searchStr.replace(/"/g, '\\"')}" "${sourceFile}"`, { encoding: 'utf8' });
+          execFileSync('grep', ['-qF', searchStr, sourceFile]);
           results.verified++;
         } catch (_) {
           results.failed++;
